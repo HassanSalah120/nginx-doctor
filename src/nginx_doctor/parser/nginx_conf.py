@@ -1,0 +1,225 @@
+"""Nginx Configuration Parser.
+
+Parses the output of `nginx -T` into structured ServerBlock and LocationBlock objects.
+Most importantly, tracks line numbers for every directive to support evidence-based findings.
+
+IMPORTANT DESIGN NOTES:
+1. Nginx configs can be nested hell with includes
+2. This parser preserves FINAL RESOLVED values, not just first seen
+3. Line numbers are tracked relative to the flattened nginx -T output
+4. Source file paths are extracted from nginx -T comments
+"""
+
+import re
+from dataclasses import dataclass, field
+
+from nginx_doctor.model.server import LocationBlock, NginxInfo, ServerBlock
+
+
+@dataclass
+class ParsedDirective:
+    """A parsed nginx directive with source tracking."""
+
+    name: str
+    args: list[str]
+    line_number: int
+    source_file: str = ""
+    raw_line: str = ""
+
+
+@dataclass
+class ParseContext:
+    """Context during parsing to track current position."""
+
+    current_file: str = ""
+    in_server: bool = False
+    in_location: bool = False
+    brace_depth: int = 0
+
+
+class NginxConfigParser:
+    """Parser for nginx -T output.
+
+    Converts the flat configuration dump into structured objects
+    while preserving source file and line number information.
+    """
+
+    # Regex to match nginx -T file headers
+    # Example: # configuration file /etc/nginx/nginx.conf:
+    FILE_HEADER_RE = re.compile(r"^# configuration file (.+):$")
+
+    # Regex to match simple directives
+    # Example: server_name example.com www.example.com;
+    DIRECTIVE_RE = re.compile(r"^\s*(\w+)\s+(.+?);?\s*$")
+
+    def __init__(self) -> None:
+        self.errors: list[str] = []
+
+    def parse(self, nginx_t_output: str, version: str = "") -> NginxInfo:
+        """Parse nginx -T output into NginxInfo structure.
+
+        Args:
+            nginx_t_output: Full output from nginx -T command.
+            version: Nginx version string.
+
+        Returns:
+            NginxInfo with all parsed server blocks.
+        """
+        info = NginxInfo(version=version, config_path="")
+        ctx = ParseContext()
+
+        lines = nginx_t_output.split("\n")
+        current_server: ServerBlock | None = None
+        current_location: LocationBlock | None = None
+
+        for line_num, line in enumerate(lines, start=1):
+            stripped = line.strip()
+
+            # Track which file we're in
+            file_match = self.FILE_HEADER_RE.match(stripped)
+            if file_match:
+                ctx.current_file = file_match.group(1)
+                if not info.config_path and "nginx.conf" in ctx.current_file:
+                    info.config_path = ctx.current_file
+                if ctx.current_file not in info.includes:
+                    info.includes.append(ctx.current_file)
+                continue
+
+            # Skip comments and empty lines
+            if not stripped or stripped.startswith("#"):
+                continue
+
+            # Detect server block start (before counting braces)
+            if stripped.startswith("server") and "{" in stripped:
+                current_server = ServerBlock(
+                    source_file=ctx.current_file,
+                    line_number=line_num,
+                )
+                ctx.in_server = True
+                ctx.brace_depth = 1
+                continue
+
+            # Track brace depth for context
+            open_braces = stripped.count("{")
+            close_braces = stripped.count("}")
+            
+            # Detect location block start
+            if ctx.in_server and stripped.startswith("location") and "{" in stripped:
+                # Extract location path
+                loc_match = re.match(r"location\s+(.*?)\s*\{", stripped)
+                loc_path = loc_match.group(1) if loc_match else ""
+                current_location = LocationBlock(
+                    path=loc_path.strip(),
+                    line_number=line_num,
+                )
+                ctx.in_location = True
+                ctx.brace_depth += open_braces - close_braces
+                continue
+
+            ctx.brace_depth += open_braces - close_braces
+
+            # Detect location block end
+            if ctx.in_location and stripped == "}":
+                if current_location and current_server:
+                    current_server.locations.append(current_location)
+                current_location = None
+                ctx.in_location = False
+                continue
+
+            # Detect server block end
+            if ctx.in_server and stripped == "}" and ctx.brace_depth == 0:
+                if current_server:
+                    info.servers.append(current_server)
+                current_server = None
+                ctx.in_server = False
+                continue
+
+            # Parse directives within server/location blocks
+            if current_server:
+                self._parse_directive(stripped, line_num, current_server, current_location)
+
+        return info
+
+    def _parse_directive(
+        self,
+        line: str,
+        line_num: int,
+        server: ServerBlock,
+        location: LocationBlock | None,
+    ) -> None:
+        """Parse a single directive line.
+
+        Args:
+            line: The directive line (stripped).
+            line_num: Line number in the nginx -T output.
+            server: Current server block being parsed.
+            location: Current location block (if inside one).
+        """
+        # Remove trailing semicolon and split
+        line = line.rstrip(";").strip()
+        if not line or line.startswith("#"):
+            return
+
+        parts = line.split(None, 1)
+        if len(parts) < 1:
+            return
+
+        directive = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ""
+
+        # Server-level directives
+        if location is None:
+            if directive == "server_name":
+                server.server_names = [n.strip() for n in args.split() if n.strip()]
+            elif directive == "listen":
+                server.listen.append(args)
+                if "ssl" in args.lower():
+                    server.ssl_enabled = True
+            elif directive == "root":
+                server.root = args.strip()
+            elif directive == "index":
+                server.index = [i.strip() for i in args.split() if i.strip()]
+            elif directive == "ssl_certificate":
+                server.ssl_certificate = args.strip()
+            elif directive == "ssl_certificate_key":
+                server.ssl_certificate_key = args.strip()
+        else:
+            # Location-level directives
+            if directive == "root":
+                location.root = args.strip()
+            elif directive == "alias":
+                location.alias = args.strip()
+            elif directive == "try_files":
+                location.try_files = args.strip()
+            elif directive == "fastcgi_pass":
+                location.fastcgi_pass = args.strip()
+            elif directive == "proxy_pass":
+                location.proxy_pass = args.strip()
+
+    def get_directive_at_line(
+        self, nginx_t_output: str, line_number: int
+    ) -> tuple[str, str] | None:
+        """Get the source file and content for a specific line.
+
+        Used for generating evidence.
+
+        Args:
+            nginx_t_output: Full nginx -T output.
+            line_number: Line number to look up.
+
+        Returns:
+            Tuple of (source_file, line_content) or None.
+        """
+        lines = nginx_t_output.split("\n")
+        if line_number < 1 or line_number > len(lines):
+            return None
+
+        # Work backwards to find the source file
+        source_file = ""
+        for i in range(line_number - 1, -1, -1):
+            match = self.FILE_HEADER_RE.match(lines[i].strip())
+            if match:
+                source_file = match.group(1)
+                break
+
+        return (source_file, lines[line_number - 1])
