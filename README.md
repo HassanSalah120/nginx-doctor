@@ -1,28 +1,24 @@
 # 🩺 nginx-doctor
 
-> SSH-based Server Intelligence System for Nginx + PHP Applications
+> **SSH-based Server Intelligence System for Nginx + PHP Applications**
 
 **Not just configs. Not just auditing. It understands intent.**
 
-## Installation
-
-````bash
-> SSH-based Server Intelligence & Diagnostic System for Nginx + PHP Stack
-
-**Nginx-Doctor** is not just a configuration linter. It is an intelligent diagnostic tool that understands the *intent* behind your server setup. It scans remote servers via SSH, builds a comprehensive model of your Nginx configuration, PHP-FPM environment, and local web applications, then cross-references them to find breaking misconfigurations.
+**Nginx-Doctor** is not simply a configuration linter. It is an intelligent diagnostic tool that scans remote servers via SSH, builds a comprehensive model of your Nginx configuration, PHP-FPM environment, and local web applications, then cross-references them to find breaking misconfigurations.
 
 ## 🚀 Key Features
 
 - **🔍 Automatic App Detection**: Identifies Laravel, PHP MVC, SPA (Vue/React), and Static sites based on filesystem fingerprints.
 - **🩺 Intelligent Diagnostics**: 20+ specialized checks including:
   - PHP-FPM socket mismatches.
-  - Laravel root misconfigurations (/public vs root).
+  - Laravel root misconfigurations (missing `/public`).
   - Missing `try_files` for framework routing.
-  - Duplicate `server_name` declarations (including those hidden in backups).
-- **🔗 Root Cause Chaining**: Detects when one issue (like an enabled `.bak` file) causes many others (like duplicate server names) and groups them as side-effects.
-- **🛠️ Actionable Recommendations**: Every finding includes exact, copy-pasteable shell commands (`sudo mv`, `sudo rm`, `sudo reload`) to fix the issue immediately.
-- **📊 Professional Reporting**: Uses the `rich` library to provide beautiful terminal summaries and evidence-based findings (File, Line, Excerpt).
-- **🛡️ Security Auditor**: Checks for exposed `.env` files, SSL configuration errors, and world-writable directories.
+  - Duplicate `server_name` declarations (including hidden backup files).
+- **📂 Filesystem Discovery**: Audits your server to find "orphaned" projects that exist on disk but are not served by Nginx.
+- **🔗 Root Cause Chaining**: Detects when one issue (like an enabled `.bak` file) causes many others and groups them logically.
+- **🛠️ Actionable Recommendations**: Every finding includes copy-pasteable shell commands (`sudo mv`, `sudo rm`) to fix the issue.
+- **📊 Professional Reporting**: Beautiful terminal output leveraging the `rich` library, with support for `plain` text and `json` output for CI/CD.
+- **🛡️ Security Auditor**: Checks for exposed `.env` files, valid root directives, and safe permission settings.
 
 ## 📦 Installation
 
@@ -33,48 +29,62 @@ cd nginx-doctor
 
 # Install in development mode
 pip install -e .
-````
+```
 
 ## 📋 Quick Start
 
-1. **Configure a server profile:**
+### 1. Configure a Server Profile
 
-   ```bash
-   python -m nginx_doctor config add prod-server --host 1.2.3.4 --user root
-   ```
+Store your connection details (SSH key based auth recommended):
 
-2. **Run a health check:**
+```bash
+python -m nginx_doctor config add prod-server --host 1.2.3.4 --user root
+```
 
-   ```bash
-   # Pre-flight connectivity check
-   python -m nginx_doctor check prod-server
+### 2. Run a Health Check (Diagnose)
 
-   # Full diagnostic scan
-   python -m nginx_doctor diagnose prod-server
-   ```
+Run a full scan to find misconfigurations and security risks:
 
-3. **Explore discovery results:**
-   ```bash
-   # See detected projects and PHP/Nginx versions
-   python -m nginx_doctor scan prod-server
-   ```
+```bash
+python -m nginx_doctor diagnose prod-server
+```
+
+### 3. Audit Filesystem (Discover)
+
+Find "orphaned" projects that take up space but aren't active in Nginx:
+
+```bash
+python -m nginx_doctor discover prod-server
+```
+
+### 4. CI/CD Integration
+
+Use plain text or JSON output formats for scripts:
+
+```bash
+# JSON output
+python -m nginx_doctor diagnose prod-server --format json > report.json
+
+# Clean text for logs
+python -m nginx_doctor diagnose prod-server --format plain
+```
 
 ## 🛠️ Diagnostic Rule IDs
 
-| ID         | Description                                  | Severity |
-| ---------- | -------------------------------------------- | -------- |
-| **NGX001** | Backup configuration files are enabled       | WARNING  |
-| **NGX002** | Duplicate server_name declaration            | WARNING  |
-| **NGX003** | PHP-FPM socket not found                     | CRITICAL |
-| **NGX004** | Laravel root misconfigured (/public missing) | CRITICAL |
-| **NGX005** | Missing try_files for routing                | WARNING  |
-| **NGX200** | .env file exposure risk                      | WARNING  |
+| ID         | Description                                                 | Severity |
+| ---------- | ----------------------------------------------------------- | -------- |
+| **NGX001** | Backup configuration files are enabled (causing duplicates) | WARNING  |
+| **NGX002** | Duplicate `server_name` declaration                         | INFO     |
+| **NGX003** | PHP-FPM socket not found                                    | CRITICAL |
+| **NGX004** | Laravel root misconfigured (`/public` missing)              | CRITICAL |
+| **NGX005** | Missing `try_files` for framework routing                   | WARNING  |
+| **NGX200** | `.env` file exposure risk                                   | WARNING  |
 
 ## 🛡️ Safety & Reliability
 
-- **Non-Destructive**: Normal scans are read-only. We only read config via `nginx -T` and directory listings.
-- **Evidence-Based**: We don't just say "it's broken". We show you the exact file and line number.
-- **Compliance Aware**: Exit codes (`0`, `1`, `2`) are provided based on the highest finding severity for easy CI/CD integration.
+- **Non-Destructive**: Scans are strictly read-only. We use `nginx -T`, `ls`, and `cat` (for config/json files only).
+- **Evidence-Based**: We don't just say "it's broken". We show you the exact file, line number, and config excerpt.
+- **Compliance Aware**: Exit codes (`0`=Clean, `1`=Warning, `2`=Critical) allow easy integration into pipelines.
 
 ## 📜 License
 
