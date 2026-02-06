@@ -20,7 +20,8 @@ class HTMLReportAction:
         findings: list[Finding] = None, 
         output_path: str = "report.html",
         unreferenced: list = None,
-        static_noise: list = None
+        static_noise: list = None,
+        ws_inventory: list = None
     ) -> str:
         """Generate the HTML report and save it to a file.
         
@@ -32,6 +33,7 @@ class HTMLReportAction:
             findings=findings or [],
             unreferenced=unreferenced or [],
             static_noise=static_noise or [],
+            ws_inventory=ws_inventory or [],
             now=datetime.now().strftime("%Y-%m-%d %H:%M:%S")
         )
 

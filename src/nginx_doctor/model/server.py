@@ -42,6 +42,13 @@ class LocationBlock:
     fastcgi_pass: str | None = None
     proxy_pass: str | None = None
     line_number: int = 0  # For evidence tracking
+    
+    # WebSocket / Reverse Proxy specific
+    proxy_http_version: str | None = None  # "1.1" required for WS
+    proxy_set_headers: dict[str, str] = field(default_factory=dict)  # Upgrade, Connection, Host, etc.
+    proxy_buffering: str | None = None  # "on" or "off"
+    proxy_read_timeout: int | None = None  # seconds
+    proxy_send_timeout: int | None = None  # seconds
 
 
 @dataclass
@@ -66,15 +73,28 @@ class ServerBlock:
 
 
 @dataclass
+class UpstreamBlock:
+    """Nginx upstream block for load balancing / proxying."""
+    
+    name: str  # upstream name (e.g., "websocket_backend")
+    servers: list[str] = field(default_factory=list)  # 127.0.0.1:6001, unix:/path/to/sock
+    source_file: str = ""
+    line_number: int = 0
+
+
+@dataclass
 class NginxInfo:
     """Nginx server information."""
 
     version: str
     config_path: str  # /etc/nginx/nginx.conf
     servers: list[ServerBlock] = field(default_factory=list)
+    upstreams: list[UpstreamBlock] = field(default_factory=list)  # All upstream {} blocks
     includes: list[str] = field(default_factory=list)  # All included config files
     skipped_includes: list[str] = field(default_factory=list)  # Included files that were skipped
     skipped_paths: list[str] = field(default_factory=list)  # Dynamic paths like $1 skipped during scan
+    has_connection_upgrade_map: bool = False  # True if map $http_upgrade $connection_upgrade detected
+    raw: str = ""  # Full nginx -T output for reference
 
 
 @dataclass

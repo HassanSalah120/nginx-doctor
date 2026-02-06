@@ -2,6 +2,29 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.6.0] - 2026-02-06
+
+### Added
+
+- **WebSocket (WSS) Auditor**: Comprehensive auditing for WebSocket endpoints with 9 specialized checks:
+  - `NGX-WSS-001`: Missing `proxy_http_version 1.1`
+  - `NGX-WSS-002`: Missing `Upgrade` header
+  - `NGX-WSS-003`: Missing `Connection` header
+  - `NGX-WSS-004`: Proxy buffering enabled for WS
+  - `NGX-WSS-005`: Low `proxy_read_timeout` (<60s)
+  - `NGX-WSS-006`: Missing `X-Forwarded-*` headers
+  - `NGX-WSS-007`: CORS wildcard on WS endpoint
+  - `NGX-WSS-008`: WS on wildcard/default server
+  - `NGX-WSS-010`: Missing dotfile protection
+- **WSS Inventory Table**: Visual inventory of all detected WebSocket locations in both CLI and HTML reports.
+- **Upstream Parsing**: Parser now extracts `upstream {}` blocks for advanced routing analysis.
+- **WS Directive Parsing**: Location blocks now capture `proxy_http_version`, `proxy_set_header`, `proxy_buffering`, and timeout directives.
+
+### Changed
+
+- **Model Extensions**: `LocationBlock` extended with WebSocket-relevant fields; new `UpstreamBlock` dataclass.
+- **NginxInfo**: Now stores raw `nginx -T` output and tracks `has_connection_upgrade_map` for best-practice detection.
+
 ## [1.5.0] - 2026-02-06
 
 ### Added

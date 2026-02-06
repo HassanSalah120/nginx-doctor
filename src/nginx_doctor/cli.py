@@ -271,11 +271,17 @@ def diagnose(ctx: click.Context, server: str, fmt: str | None, output: str) -> N
             dr_analyzer = NginxDoctorAnalyzer(model)
             auditor = ServerAuditor(model)
             
-            findings = dr_analyzer.diagnose(additional_findings=auditor.audit())
+            # Run WSS auditor
+            from nginx_doctor.analyzer.wss_auditor import WSSAuditor
+            wss_auditor = WSSAuditor(model)
+            wss_findings = wss_auditor.audit()
+            
+            findings = dr_analyzer.diagnose(additional_findings=auditor.audit() + wss_findings)
             
             if fmt == "html":
                 html_reporter = HTMLReportAction()
-                report_path = html_reporter.generate(model, findings, output_path=output)
+                ws_inventory = wss_auditor.get_inventory()
+                report_path = html_reporter.generate(model, findings, output_path=output, ws_inventory=ws_inventory)
                 console.print(f"\n[bold green]Report generated:[/] {report_path}")
                 sys.exit(0)
 
@@ -285,6 +291,11 @@ def diagnose(ctx: click.Context, server: str, fmt: str | None, output: str) -> N
             # Only show summary table in rich/plain mode (not json)
             if fmt != "json":
                 reporter.report_server_summary(model)
+            
+            # Show WSS inventory if any WebSocket locations detected
+            ws_inventory = wss_auditor.get_inventory()
+            if ws_inventory:
+                reporter.report_wss_inventory(ws_inventory)
             
             exit_code = reporter.report_findings(findings)
             

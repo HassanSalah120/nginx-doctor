@@ -431,3 +431,82 @@ class ReportAction:
                 self.console.print(yaml.dump(data, sort_keys=False))
             except ImportError:
                 self.console.print("[red]Error: PyYAML is required for YAML export[/]")
+
+    def report_wss_inventory(self, ws_locations: list) -> None:
+        """Report WebSocket locations inventory.
+        
+        Args:
+            ws_locations: List of WSLocation objects from WSSAuditor.get_inventory()
+        """
+        if not ws_locations:
+            return
+            
+        if self.format_mode == "json":
+            import json
+            data = [
+                {
+                    "domain": ws.domain,
+                    "ports": ws.ports,
+                    "path": ws.location.path,
+                    "proxy_target": ws.proxy_target,
+                    "has_upgrade": ws.has_upgrade,
+                    "has_connection": ws.has_connection,
+                    "has_http_version_11": ws.has_http_version_11,
+                    "buffering": ws.buffering,
+                    "read_timeout": ws.read_timeout,
+                    "risk_level": ws.risk_level,
+                    "issues": ws.issues,
+                }
+                for ws in ws_locations
+            ]
+            self.console.print(json.dumps(data, indent=2))
+            return
+            
+        if self.format_mode == "plain":
+            self.console.print("\n🔌 WebSocket (WSS) Inventory")
+            self.console.print("-" * 60)
+            for ws in ws_locations:
+                status = "✓" if ws.risk_level == "OK" else ("⚠" if ws.risk_level == "WARNING" else "✗")
+                self.console.print(f"{status} {ws.domain}:{','.join(ws.ports)} {ws.location.path}")
+                self.console.print(f"   Target: {ws.proxy_target}")
+                self.console.print(f"   Upgrade: {'Yes' if ws.has_upgrade else 'No'}, Connection: {'Yes' if ws.has_connection else 'No'}, HTTP/1.1: {'Yes' if ws.has_http_version_11 else 'No'}")
+                if ws.issues:
+                    self.console.print(f"   Issues: {', '.join(ws.issues)}")
+                self.console.print()
+            return
+            
+        # Rich mode
+        from rich.panel import Panel
+        from rich.table import Table
+        
+        self.console.print()
+        self.console.print(Panel.fit("🔌 WebSocket (WSS) Inventory", style="bold magenta"))
+        self.console.print()
+        
+        table = Table(show_header=True, header_style="bold white", expand=True)
+        table.add_column("Domain")
+        table.add_column("Ports")
+        table.add_column("WS Path")
+        table.add_column("Proxy Target")
+        table.add_column("Upgrade", justify="center")
+        table.add_column("Risk", justify="center")
+        
+        for ws in ws_locations:
+            risk_style = {
+                "OK": "[green]OK[/]",
+                "WARNING": "[yellow]WARN[/]",
+                "CRITICAL": "[red]CRIT[/]",
+            }.get(ws.risk_level, ws.risk_level)
+            
+            upgrade_icon = "[green]✓[/]" if ws.has_upgrade and ws.has_connection and ws.has_http_version_11 else "[red]✗[/]"
+            
+            table.add_row(
+                ws.domain,
+                ", ".join(ws.ports),
+                ws.location.path,
+                ws.proxy_target[:30] + "..." if len(ws.proxy_target) > 30 else ws.proxy_target,
+                upgrade_icon,
+                risk_style,
+            )
+        
+        self.console.print(table)

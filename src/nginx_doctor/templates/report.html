@@ -432,6 +432,52 @@
       </section>
       {% endif %}
 
+      {% if ws_inventory %}
+      <section style="margin-top: 3rem">
+        <div class="section-title">🔌 WebSocket (WSS) Inventory</div>
+        <div class="card" style="padding: 0; overflow-x: auto; border-color: #a855f7">
+          <table class="project-table">
+            <thead>
+              <tr>
+                <th>Domain</th>
+                <th>Ports</th>
+                <th>WS Path</th>
+                <th>Proxy Target</th>
+                <th>Upgrade</th>
+                <th>Risk</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for ws in ws_inventory %}
+              <tr>
+                <td style="font-family: monospace">{{ ws.domain }}</td>
+                <td>{{ ws.ports | join(', ') }}</td>
+                <td style="font-family: monospace">{{ ws.location.path }}</td>
+                <td style="font-family: monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis">{{ ws.proxy_target }}</td>
+                <td style="text-align: center">
+                  {% if ws.has_upgrade and ws.has_connection and ws.has_http_version_11 %}
+                    <span style="color: var(--success)">✓</span>
+                  {% else %}
+                    <span style="color: var(--critical)">✗</span>
+                  {% endif %}
+                </td>
+                <td>
+                  {% if ws.risk_level == 'OK' %}
+                    <span class="severity-badge" style="background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.3);">OK</span>
+                  {% elif ws.risk_level == 'WARNING' %}
+                    <span class="severity-badge sev-warning">WARN</span>
+                  {% else %}
+                    <span class="severity-badge sev-critical">CRIT</span>
+                  {% endif %}
+                </td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {% endif %}
+
       <div style="margin-top: 4rem"></div>
 
       <section>

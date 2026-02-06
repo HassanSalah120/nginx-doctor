@@ -13,7 +13,7 @@ IMPORTANT DESIGN NOTES:
 import re
 from dataclasses import dataclass, field
 
-from nginx_doctor.model.server import LocationBlock, NginxInfo, ServerBlock
+from nginx_doctor.model.server import LocationBlock, NginxInfo, ServerBlock, UpstreamBlock
 
 
 @dataclass
@@ -34,6 +34,8 @@ class ParseContext:
     current_file: str = ""
     in_server: bool = False
     in_location: bool = False
+    in_upstream: bool = False
+    in_map: bool = False
     brace_depth: int = 0
 
 
@@ -65,12 +67,13 @@ class NginxConfigParser:
         Returns:
             NginxInfo with all parsed server blocks.
         """
-        info = NginxInfo(version=version, config_path="")
+        info = NginxInfo(version=version, config_path="", raw=nginx_t_output)
         ctx = ParseContext()
 
         lines = nginx_t_output.split("\n")
         current_server: ServerBlock | None = None
         current_location: LocationBlock | None = None
+        current_upstream: UpstreamBlock | None = None
 
         for line_num, line in enumerate(lines, start=1):
             stripped = line.strip()
@@ -87,6 +90,44 @@ class NginxConfigParser:
 
             # Skip comments and empty lines
             if not stripped or stripped.startswith("#"):
+                continue
+
+            # Detect map block for $connection_upgrade (WS best practice)
+            if stripped.startswith("map ") and "$http_upgrade" in stripped and "$connection_upgrade" in stripped:
+                info.has_connection_upgrade_map = True
+                ctx.in_map = True
+                continue
+            
+            # Track map block end
+            if ctx.in_map:
+                if stripped == "}":
+                    ctx.in_map = False
+                continue
+
+            # Detect upstream block start
+            if stripped.startswith("upstream") and "{" in stripped:
+                upstream_match = re.match(r"upstream\s+(\S+)\s*\{", stripped)
+                upstream_name = upstream_match.group(1) if upstream_match else "unknown"
+                current_upstream = UpstreamBlock(
+                    name=upstream_name,
+                    source_file=ctx.current_file,
+                    line_number=line_num,
+                )
+                ctx.in_upstream = True
+                continue
+
+            # Handle upstream block content
+            if ctx.in_upstream:
+                if stripped == "}":
+                    if current_upstream:
+                        info.upstreams.append(current_upstream)
+                    current_upstream = None
+                    ctx.in_upstream = False
+                elif stripped.startswith("server"):
+                    # Parse upstream server: "server 127.0.0.1:6001;"
+                    server_match = re.match(r"server\s+([^;]+)", stripped)
+                    if server_match and current_upstream:
+                        current_upstream.servers.append(server_match.group(1).strip())
                 continue
 
             # Detect server block start (before counting braces)
@@ -195,6 +236,29 @@ class NginxConfigParser:
                 location.fastcgi_pass = args.strip()
             elif directive == "proxy_pass":
                 location.proxy_pass = args.strip()
+            # WebSocket / Reverse Proxy directives
+            elif directive == "proxy_http_version":
+                location.proxy_http_version = args.strip()
+            elif directive == "proxy_set_header":
+                # Parse: proxy_set_header Upgrade $http_upgrade;
+                header_parts = args.split(None, 1)
+                if len(header_parts) == 2:
+                    location.proxy_set_headers[header_parts[0]] = header_parts[1]
+            elif directive == "proxy_buffering":
+                location.proxy_buffering = args.strip()
+            elif directive == "proxy_read_timeout":
+                # Parse timeout value (may have 's' suffix or just number)
+                timeout_str = args.strip().rstrip('s')
+                try:
+                    location.proxy_read_timeout = int(timeout_str)
+                except ValueError:
+                    pass
+            elif directive == "proxy_send_timeout":
+                timeout_str = args.strip().rstrip('s')
+                try:
+                    location.proxy_send_timeout = int(timeout_str)
+                except ValueError:
+                    pass
 
     def get_directive_at_line(
         self, nginx_t_output: str, line_number: int
