@@ -2,6 +2,33 @@
 
 All notable changes to this project will be documented in this file.
 
+## [1.7.0] - 2026-02-06
+
+### Added
+
+- **Modular Audit System**: Introduced a standardized plugin architecture for server audits.
+- **Laravel Readiness Scanner**: Automated verification of `APP_DEBUG`, directory permissions, and background services (Scheduler, Queue).
+- **Port Usage Analyzer**: Real-time cross-referencing of Nginx proxy targets with system listening ports.
+- **Security Auditor Enhancements**:
+  - Recursive security header verification for nested location blocks.
+  - Automatic `autoindex` (directory listing) detection and reporting.
+  - Improved dotfile and Sensitive file (e.g., `.env`) leakage checks.
+- **Safe-Fix Framework**: Advanced remediation system with backup creation, `nginx -t` validation, and safe dry-run modes.
+- **Dynamic Scoring**: New 0-100 server health scoring based on finding weight and severity.
+- **HTML Report Generation**: Premiuminteractive HTML dashboards with `--format html`.
+
+### Changed
+
+- **Model Refactoring**: `LocationBlock` and `ServerBlock` models now support nested structures and advanced metadata.
+- **CLI Intelligence**: Added `--explain` flag for deep-dive diagnostics and `--score` for quick health checks.
+- **Mocking Strategy**: Standardized testing mocks for CLI and Action components.
+
+### Fixed
+
+- Resolved recursive location block traversal logic in security audits.
+- Fixed `AttributeError` in `LocationBlock` when accessing `autoindex`.
+- Improved Windows console compatibility for Unicode/emoji output.
+
 ## [1.6.0] - 2026-02-06
 
 ### Added

@@ -39,9 +39,15 @@ class LocationBlock:
     root: str | None = None
     alias: str | None = None
     try_files: str | None = None
+    autoindex: bool = False
     fastcgi_pass: str | None = None
     proxy_pass: str | None = None
+    source_file: str = ""  # Which config file this came from
     line_number: int = 0  # For evidence tracking
+    
+    # Headers defined with add_header
+    headers: dict[str, str] = field(default_factory=dict)
+
     
     # WebSocket / Reverse Proxy specific
     proxy_http_version: str | None = None  # "1.1" required for WS
@@ -49,6 +55,9 @@ class LocationBlock:
     proxy_buffering: str | None = None  # "on" or "off"
     proxy_read_timeout: int | None = None  # seconds
     proxy_send_timeout: int | None = None  # seconds
+    
+    # Nested locations
+    locations: list["LocationBlock"] = field(default_factory=list)
 
 
 @dataclass
@@ -58,6 +67,7 @@ class ServerBlock:
     server_names: list[str] = field(default_factory=list)
     listen: list[str] = field(default_factory=list)  # 80, 443 ssl, etc.
     root: str | None = None
+    autoindex: bool = False
     index: list[str] = field(default_factory=list)
     locations: list[LocationBlock] = field(default_factory=list)
     ssl_enabled: bool = False
@@ -65,6 +75,10 @@ class ServerBlock:
     ssl_certificate_key: str | None = None
     source_file: str = ""  # Which config file this came from
     line_number: int = 0  # For evidence tracking
+    
+    # Headers defined with add_header
+    headers: dict[str, str] = field(default_factory=dict)
+
 
     @property
     def is_default_server(self) -> bool:
@@ -93,6 +107,10 @@ class NginxInfo:
     includes: list[str] = field(default_factory=list)  # All included config files
     skipped_includes: list[str] = field(default_factory=list)  # Included files that were skipped
     skipped_paths: list[str] = field(default_factory=list)  # Dynamic paths like $1 skipped during scan
+    
+    # Global/HTTP context headers
+    http_headers: dict[str, str] = field(default_factory=dict)
+    
     has_connection_upgrade_map: bool = False  # True if map $http_upgrade $connection_upgrade detected
     raw: str = ""  # Full nginx -T output for reference
 

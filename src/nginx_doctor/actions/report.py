@@ -43,10 +43,12 @@ class ReportAction:
         prerequisites=[],
     )
 
-    def __init__(self, console: Console | None = None, format_mode: str = "rich", no_wrap: bool = False) -> None:
+    def __init__(self, console: Console | None = None, format_mode: str = "rich", no_wrap: bool = False, show_score: bool = False, show_explain: bool = False) -> None:
         self.console = console or Console()
         self.format_mode = format_mode
         self.no_wrap = no_wrap
+        self.show_score = show_score
+        self.show_explain = show_explain
 
     def report_findings(self, findings: list[Finding]) -> int:
         """Report diagnosis findings to the console."""
@@ -55,12 +57,20 @@ class ReportAction:
         if self.format_mode == "json":
             import json
             from dataclasses import asdict
-            # Convert findings to dicts, manually handling Enum serialization if needed
             data = [asdict(f) for f in findings]
-            # Simple enum serialization fix
             for item in data:
                 item['severity'] = item['severity'].value if hasattr(item['severity'], 'value') else str(item['severity'])
                 item['evidence'] = [asdict(e) for e in findings[data.index(item)].evidence]
+            
+            # If score requested in JSON, wrap output?
+            # Current contract usually expects list of findings.
+            # Breaking output schema might be bad.
+            # User said "NOT change existing output format unless flags are used".
+            # For JSON, maybe include a "_meta" field if possible? 
+            # Or just print score to stderr? 
+            # Let's stick to console/human output for now as per user examples. 
+            # If user wanted JSON score, they'd ask.
+            
             self.console.print(json.dumps(data, indent=2))
             return 1 if any(f.severity in (Severity.CRITICAL, Severity.WARNING) for f in findings) else 0
 
@@ -78,6 +88,12 @@ class ReportAction:
         info_count = len(findings) - warning_count - critical_count
 
         self._print()
+        
+        # SCORE SECTION
+        if self.show_score:
+            self._print_score_summary(findings)
+            self._print()
+
         self._print("Diagnosis Results", style="bold underline")
         self._print(f"   Summary: {critical_count} critical, {warning_count} warning, {info_count} info")
         self._print()
@@ -86,6 +102,161 @@ class ReportAction:
             self._print_finding(finding)
 
         return 1 if warning_count > 0 or critical_count > 0 else 0
+
+    def _print_score_summary(self, findings: list[Finding]) -> None:
+        """Print the 0-100 score card."""
+        from nginx_doctor.engine.scoring import ScoringEngine
+        scorer = ScoringEngine()
+        score = scorer.calculate(findings)
+        
+        # Color coding
+        total_color = "red"
+        if score.total >= 80: total_color = "green"
+        elif score.total >= 60: total_color = "yellow"
+        
+        if self.format_mode == "plain":
+            self.console.print(f"Server Health Score: {score.total}/100")
+            self.console.print(f"Security: {score.security.current_points}/{score.security.max_points}")
+            self.console.print(f"Performance: {score.performance.current_points}/{score.performance.max_points}")
+            self.console.print(f"Architecture: {score.architecture.current_points}/{score.architecture.max_points}")
+            self.console.print(f"Laravel/App: {score.app.current_points}/{score.app.max_points}")
+        else:
+            # Rich mode
+            from rich.table import Table
+            from rich.panel import Panel
+            
+            grid = Table.grid(expand=True)
+            grid.add_column()
+            grid.add_column(justify="right")
+            
+            def row(name, cur, max_p):
+                c = "green" if cur == max_p else ("yellow" if cur > max_p/2 else "red")
+                grid.add_row(name, f"[{c}]{cur}[/][dim]/{max_p}[/]")
+                
+            row("Security", score.security.current_points, score.security.max_points)
+            row("Performance", score.performance.current_points, score.performance.max_points)
+            row("Architecture", score.architecture.current_points, score.architecture.max_points)
+            row("Laravel/App", score.app.current_points, score.app.max_points)
+            
+            self.console.print(Panel(
+                grid,
+                title=f"[{total_color}]Server Health Score: {score.total}/100[/]",
+                border_style=total_color
+            ))
+
+    def _print_finding(self, finding: Finding) -> None:
+        """Print a single finding with format-aware logic."""
+        if self.format_mode == "plain":
+            severity_label = f"[{finding.severity.value.upper()}]"
+            title = f"{finding.id}: {finding.condition}"
+            if finding.derived_from:
+                title += f" (derived_from={finding.derived_from})"
+                
+            self.console.print(f"\n{severity_label}: {title}")
+            self.console.print(f"   Cause: {finding.cause}")
+            self.console.print(f"   Confidence: {finding.confidence:.0%}")
+            
+            if finding.evidence:
+                self.console.print("   Evidence:")
+                for ev in finding.evidence:
+                    # STRICT SINGLE LINE
+                    line = f"      - file={ev.source_file} line={ev.line_number}"
+                    if ev.excerpt:
+                        # Sanitize newlines in excerpt
+                        clean_excerpt = ev.excerpt.replace('\n', ' ').strip()
+                        line += f" excerpt=\"{clean_excerpt}\""
+                    self.console.print(line)
+
+            if finding.treatment:
+                self.console.print("   Treatment:")
+                # Pre-formatted block for plain text
+                treatment_lines = str(finding.treatment).split('\n')
+                for line in treatment_lines:
+                    self.console.print(f"      {line}")
+            
+            if finding.impact:
+                self.console.print("   Impact if ignored:")
+                for impact in finding.impact:
+                    self.console.print(f"      ! {impact}")
+            
+            # EXPLAIN MODE (Plain)
+            if self.show_explain:
+                from nginx_doctor.engine.knowledge_base import get_explanation
+                expl = get_explanation(finding.id)
+                if expl:
+                    self.console.print("   Explanation:")
+                    self.console.print(f"      Why: {expl.why}")
+                    self.console.print(f"      Risk: {expl.risk}")
+                    self.console.print(f"      When to ignore: {expl.ignore}")
+
+        else:
+            # Rich Mode (Existing logic with enhancements)
+            color = "white"
+            icon = "i"
+            if finding.severity == Severity.CRITICAL:
+                color = "red"
+                icon = "x"
+            elif finding.severity == Severity.WARNING:
+                color = "yellow"
+                icon = "!"
+            elif finding.severity == Severity.INFO:
+                color = "blue"
+                icon = "i"
+
+            title = f"[{color}][{finding.severity.value}] {icon} [{finding.id}] {finding.condition}[/]"
+            if finding.derived_from:
+                title += f" [dim](derived_from={finding.derived_from})[/]"
+            
+            self.console.print(title)
+            self.console.print(f"   [dim]Cause:[/] {finding.cause}")
+            self.console.print(f"   [dim]Confidence:[/] {finding.confidence:.0%}")
+
+            self.console.print("   [dim]Evidence:[/]")
+            for evidence in finding.evidence:
+                # Rich auto-wraps, but we can try to keep it cleaner
+                loc = f"{evidence.source_file}:{evidence.line_number}"
+                self.console.print(f"      - {loc}")
+                if evidence.excerpt:
+                    self.console.print(f"         [italic]{evidence.excerpt}[/]")
+
+            if finding.treatment:
+                treatment_text = str(finding.treatment)
+                if "\n" in treatment_text:
+                    # Panel logic for rich mode
+                    from rich.panel import Panel
+                    self.console.print("   [dim]Treatment:[/]")
+                    is_command = "sudo " in treatment_text
+                    title = "[bold white]Terminal Action[/]" if is_command else "[bold white]Configuration Change[/]"
+                    border = "green" if is_command else "blue"
+                    
+                    self.console.print(
+                        Panel(
+                            f"[green]{treatment_text}[/]" if is_command else f"[blue]{treatment_text}[/]",
+                            title=title,
+                            title_align="left",
+                            border_style=border,
+                            padding=(1, 2)
+                        )
+                    )
+                else:
+                    self.console.print(f"   [dim]Treatment:[/] [green]{finding.treatment}[/]")
+
+            if finding.impact:
+                self.console.print("   [dim]Impact if ignored:[/]")
+                for impact in finding.impact:
+                    self.console.print(f"      ! {impact}")
+            
+            # EXPLAIN MODE (Rich)
+            if self.show_explain:
+                from nginx_doctor.engine.knowledge_base import get_explanation
+                expl = get_explanation(finding.id)
+                if expl:
+                    self.console.print("   [bold cyan]Explanation:[/]")
+                    self.console.print(f"      [cyan]Why:[/cyan] {expl.why}")
+                    self.console.print(f"      [cyan]Risk:[/cyan] {expl.risk}")
+                    self.console.print(f"      [cyan]Ignore if:[/cyan] {expl.ignore}")
+            
+            self.console.print()
 
     def _print(self, text: str = "", style: str | None = None) -> None:
         """Print helper that respects plain mode."""

@@ -29,6 +29,7 @@ from nginx_doctor.parser.nginx_conf import NginxConfigParser
 from nginx_doctor.scanner.filesystem import FilesystemScanner
 from nginx_doctor.scanner.nginx import NginxScanner
 from nginx_doctor.scanner.php import PHPScanner
+from nginx_doctor.actions.safe_fix import SafeFixAction
 
 console = Console()
 
@@ -249,8 +250,37 @@ def scan(ctx: click.Context, server: str, output_format: str | None) -> None:
 @click.argument("server")
 @click.option("--format", "fmt", type=click.Choice(["rich", "plain", "json", "html"]), default=None, help="Output format")
 @click.option("--output", "-o", default="report.html", help="Output file for HTML report")
+@click.option("--laravel", is_flag=True, help="Enable Laravel readiness scanning")
+@click.option("--ports", is_flag=True, help="Enable port usage analyzer")
+@click.option("--security", is_flag=True, help="Enable security headers checks")
+@click.option("--phpfpm", is_flag=True, help="Enable PHP-FPM analysis")
+@click.option("--performance", is_flag=True, help="Enable performance audit")
+@click.option("--all", "run_all", is_flag=True, help="Run all optional analyzers")
+@click.option("--score", is_flag=True, help="Show 0-100 summary scores")
+@click.option("--explain", is_flag=True, help="Show 'why this matters' for findings")
+@click.option("--fix", is_flag=True, help="Apply fixes (interactive)")
+@click.option("--safe-fix", is_flag=True, help="Apply safe fixes only")
+@click.option("--dry-run", is_flag=True, help="Simulate fixes without changes")
+@click.option("--yes", is_flag=True, help="Skip confirmation prompts")
 @click.pass_context
-def diagnose(ctx: click.Context, server: str, fmt: str | None, output: str) -> None:
+def diagnose(
+    ctx: click.Context, 
+    server: str, 
+    fmt: str | None, 
+    output: str,
+    laravel: bool,
+    ports: bool,
+    security: bool,
+    phpfpm: bool,
+    performance: bool,
+    run_all: bool,
+    score: bool,
+    explain: bool,
+    fix: bool,
+    safe_fix: bool,
+    dry_run: bool,
+    yes: bool
+) -> None:
     """Run full diagnosis on a server.
 
     Identifies misconfigurations with evidence-based findings.
@@ -274,9 +304,29 @@ def diagnose(ctx: click.Context, server: str, fmt: str | None, output: str) -> N
             # Run WSS auditor
             from nginx_doctor.analyzer.wss_auditor import WSSAuditor
             wss_auditor = WSSAuditor(model)
-            wss_findings = wss_auditor.audit()
+            legacy_findings = dr_analyzer.diagnose(additional_findings=auditor.audit() + wss_auditor.audit())
             
-            findings = dr_analyzer.diagnose(additional_findings=auditor.audit() + wss_findings)
+            # Run new modular checks
+            from nginx_doctor.checks import CheckContext, run_checks
+            import nginx_doctor.checks.laravel.laravel_auditor
+            import nginx_doctor.checks.ports.port_auditor
+            import nginx_doctor.checks.security.security_auditor
+            import nginx_doctor.checks.phpfpm.phpfpm_auditor
+            import nginx_doctor.checks.performance.performance_auditor
+            
+            check_ctx = CheckContext(
+                model=model,
+                ssh=ssh,
+                laravel_enabled=laravel or run_all,
+                ports_enabled=ports or run_all,
+                security_enabled=security or run_all,
+                phpfpm_enabled=phpfpm or run_all,
+                performance_enabled=performance or run_all,
+            )
+            
+            new_findings = run_checks(check_ctx)
+            findings = legacy_findings + new_findings
+            # print(f"DEBUG_CLI: findings length: {len(findings)}")
             
             if fmt == "html":
                 html_reporter = HTMLReportAction()
@@ -286,7 +336,7 @@ def diagnose(ctx: click.Context, server: str, fmt: str | None, output: str) -> N
                 sys.exit(0)
 
             # Report with selected format
-            reporter = ReportAction(console, format_mode=fmt)
+            reporter = ReportAction(console, format_mode=fmt, show_score=score, show_explain=explain)
             
             # Only show summary table in rich/plain mode (not json)
             if fmt != "json":
@@ -303,8 +353,31 @@ def diagnose(ctx: click.Context, server: str, fmt: str | None, output: str) -> N
             ctx.obj['findings'] = findings
             ctx.obj['model'] = model
             
-            sys.exit(exit_code)
+            # Phase 4: Safe Fix Execution
+            should_run = (fix or safe_fix)
+            if should_run:
+                from rich.prompt import Confirm
+                
+                # Determine mode
+                # Defaults to dry-run unless user explicitly says "yes" or confirms interactively
+                is_dry_run = dry_run
+                
+                if not dry_run and not yes:
+                    console.print("\n[bold yellow]⚠️  You requested to apply fixes.[/]")
+                    if not Confirm.ask("Do you want to proceed with applying changes?"):
+                        console.print("[dim]Switching to dry-run mode...[/]")
+                        is_dry_run = True
+                
+                # print(f"DEBUG_CLI: instantiating {SafeFixAction}")
+                fixer = SafeFixAction(console, ssh, dry_run=is_dry_run)
+                fix_results = fixer.run(findings)
+                
+                # If fixes failed, ensure we exit with error
+                if any(r.status == "failed" for r in fix_results):
+                    exit_code = 1
             
+            sys.exit(exit_code)
+
     except SystemExit:
         raise
     except Exception as e:

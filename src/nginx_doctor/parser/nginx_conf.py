@@ -37,6 +37,8 @@ class ParseContext:
     in_upstream: bool = False
     in_map: bool = False
     brace_depth: int = 0
+    server_brace_depth: int = 0
+    location_brace_depth: int = 0
 
 
 class NginxConfigParser:
@@ -48,7 +50,7 @@ class NginxConfigParser:
 
     # Regex to match nginx -T file headers
     # Example: # configuration file /etc/nginx/nginx.conf:
-    FILE_HEADER_RE = re.compile(r"^# configuration file (.+):$")
+    FILE_HEADER_RE = re.compile(r"^# configuration file (.*):")
 
     # Regex to match simple directives
     # Example: server_name example.com www.example.com;
@@ -80,8 +82,10 @@ class NginxConfigParser:
 
             # Track which file we're in
             file_match = self.FILE_HEADER_RE.match(stripped)
+            # print(f"DEBUG: line='{stripped}' match={file_match}")
             if file_match:
                 ctx.current_file = file_match.group(1)
+                # print(f"DEBUG: Found file {ctx.current_file}")
                 if not info.config_path and "nginx.conf" in ctx.current_file:
                     info.config_path = ctx.current_file
                 if ctx.current_file not in info.includes:
@@ -130,37 +134,50 @@ class NginxConfigParser:
                         current_upstream.servers.append(server_match.group(1).strip())
                 continue
 
-            # Detect server block start (before counting braces)
-            if stripped.startswith("server") and "{" in stripped:
-                current_server = ServerBlock(
-                    source_file=ctx.current_file,
-                    line_number=line_num,
-                )
-                ctx.in_server = True
-                ctx.brace_depth = 1
-                continue
+            # Global/HTTP context directives
+            if not ctx.in_server and not ctx.in_upstream and not ctx.in_map:
+                if stripped.startswith("add_header "):
+                    parts = stripped.rstrip(";").split(None, 2)
+                    if len(parts) >= 3:
+                        # add_header Name Value;
+                        info.http_headers[parts[1]] = parts[2]
 
             # Track brace depth for context
             open_braces = stripped.count("{")
             close_braces = stripped.count("}")
             
+            # Detect server block start
+            if not ctx.in_server and stripped.startswith("server") and "{" in stripped:
+                current_server = ServerBlock(
+                    source_file=ctx.current_file,
+                    line_number=line_num,
+                )
+                ctx.in_server = True
+                ctx.server_brace_depth = ctx.brace_depth
+                ctx.brace_depth += open_braces - close_braces
+                continue
+
             # Detect location block start
-            if ctx.in_server and stripped.startswith("location") and "{" in stripped:
+            if ctx.in_server and not ctx.in_location and stripped.startswith("location") and "{" in stripped:
                 # Extract location path
                 loc_match = re.match(r"location\s+(.*?)\s*\{", stripped)
                 loc_path = loc_match.group(1) if loc_match else ""
                 current_location = LocationBlock(
                     path=loc_path.strip(),
                     line_number=line_num,
+                    source_file=ctx.current_file
                 )
                 ctx.in_location = True
+                ctx.location_brace_depth = ctx.brace_depth
                 ctx.brace_depth += open_braces - close_braces
                 continue
 
+            # Update depth for other lines
+            old_depth = ctx.brace_depth
             ctx.brace_depth += open_braces - close_braces
 
             # Detect location block end
-            if ctx.in_location and stripped == "}":
+            if ctx.in_location and stripped == "}" and ctx.brace_depth == ctx.location_brace_depth:
                 if current_location and current_server:
                     current_server.locations.append(current_location)
                 current_location = None
@@ -168,7 +185,7 @@ class NginxConfigParser:
                 continue
 
             # Detect server block end
-            if ctx.in_server and stripped == "}" and ctx.brace_depth == 0:
+            if ctx.in_server and stripped == "}" and ctx.brace_depth == ctx.server_brace_depth:
                 if current_server:
                     info.servers.append(current_server)
                 current_server = None
@@ -218,12 +235,18 @@ class NginxConfigParser:
                     server.ssl_enabled = True
             elif directive == "root":
                 server.root = args.strip()
+            elif directive == "autoindex":
+                server.autoindex = args.strip().lower() == "on"
             elif directive == "index":
                 server.index = [i.strip() for i in args.split() if i.strip()]
             elif directive == "ssl_certificate":
                 server.ssl_certificate = args.strip()
             elif directive == "ssl_certificate_key":
                 server.ssl_certificate_key = args.strip()
+            elif directive == "add_header":
+                header_parts = args.split(None, 1)
+                if len(header_parts) == 2:
+                    server.headers[header_parts[0]] = header_parts[1]
         else:
             # Location-level directives
             if directive == "root":
@@ -236,6 +259,10 @@ class NginxConfigParser:
                 location.fastcgi_pass = args.strip()
             elif directive == "proxy_pass":
                 location.proxy_pass = args.strip()
+            elif directive == "add_header":
+                header_parts = args.split(None, 1)
+                if len(header_parts) == 2:
+                    location.headers[header_parts[0]] = header_parts[1]
             # WebSocket / Reverse Proxy directives
             elif directive == "proxy_http_version":
                 location.proxy_http_version = args.strip()

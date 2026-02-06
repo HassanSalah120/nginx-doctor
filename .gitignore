@@ -24,3 +24,4 @@ server_profiles.json
 *.log
 debug_remote.py
 Project.md
+*.html
