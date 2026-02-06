@@ -43,110 +43,173 @@ class ReportAction:
         prerequisites=[],
     )
 
-    def __init__(self, console: Console | None = None) -> None:
+    def __init__(self, console: Console | None = None, format_mode: str = "rich", no_wrap: bool = False) -> None:
         self.console = console or Console()
+        self.format_mode = format_mode
+        self.no_wrap = no_wrap
 
-    def report_findings(self, findings: list[Finding]) -> None:
-        """Print all findings with evidence."""
-        if not findings:
-            self.console.print("   [green][bold]PASS:[/] No issues found.[/]")
-            return
+    def report_findings(self, findings: list[Finding]) -> int:
+        """Report diagnosis findings to the console."""
+            
+        # JSON Mode
+        if self.format_mode == "json":
+            import json
+            from dataclasses import asdict
+            # Convert findings to dicts, manually handling Enum serialization if needed
+            data = [asdict(f) for f in findings]
+            # Simple enum serialization fix
+            for item in data:
+                item['severity'] = item['severity'].value if hasattr(item['severity'], 'value') else str(item['severity'])
+                item['evidence'] = [asdict(e) for e in findings[data.index(item)].evidence]
+            self.console.print(json.dumps(data, indent=2))
+            return 1 if any(f.severity in (Severity.CRITICAL, Severity.WARNING) for f in findings) else 0
 
-        # Sort findings by severity: CRITICAL (0) < WARNING (1) < INFO (2)
-        severity_order = {
-            Severity.CRITICAL: 0,
-            Severity.WARNING: 1,
-            Severity.INFO: 2,
-        }
-        sorted_findings = sorted(findings, key=lambda f: severity_order.get(f.severity, 99))
+        # Sort by severity
+        sorted_findings = sorted(
+            findings, 
+            key=lambda x: (
+                0 if x.severity == Severity.CRITICAL else 
+                1 if x.severity == Severity.WARNING else 2
+            )
+        )
 
-        # Count by severity for the summary line
-        counts = {
-            Severity.CRITICAL: 0,
-            Severity.WARNING: 0,
-            Severity.INFO: 0
-        }
-        for f in findings:
-            counts[f.severity] = counts.get(f.severity, 0) + 1
-        
-        sum_parts = []
-        if counts[Severity.CRITICAL]:
-            sum_parts.append(f"[red]{counts[Severity.CRITICAL]} critical[/]")
-        if counts[Severity.WARNING]:
-            sum_parts.append(f"[yellow]{counts[Severity.WARNING]} warning[/]")
-        if counts[Severity.INFO]:
-            sum_parts.append(f"[blue]{counts[Severity.INFO]} info[/]")
+        warning_count = sum(1 for f in findings if f.severity == Severity.WARNING)
+        critical_count = sum(1 for f in findings if f.severity == Severity.CRITICAL)
+        info_count = len(findings) - warning_count - critical_count
 
-        self.console.print("\n[bold]Diagnosis Results[/]")
-        self.console.print(f"   Summary: {', '.join(sum_parts)}")
-        self.console.print()
+        self._print()
+        self._print("Diagnosis Results", style="bold underline")
+        self._print(f"   Summary: {critical_count} critical, {warning_count} warning, {info_count} info")
+        self._print()
 
         for finding in sorted_findings:
             self._print_finding(finding)
 
+        return 1 if warning_count > 0 or critical_count > 0 else 0
+
+    def _print(self, text: str = "", style: str | None = None) -> None:
+        """Print helper that respects plain mode."""
+        if self.format_mode == "plain":
+            # Strip simple markup for plain mode if needed, or rely on Console(force_terminal=False)
+            # But we want to avoid specific rich artifacts like panels
+            if style and "bold" in style:
+                pass # Could add uppercase or similar
+            # Remove markup tags for plain text
+            from rich.text import Text
+            plain_text = Text.from_markup(text).plain
+            self.console.print(plain_text)
+        else:
+            self.console.print(text, style=style)
+
     def _print_finding(self, finding: Finding) -> None:
-        """Print a single finding with evidence."""
-        # Severity color
-        colors = {
-            "critical": "red",
-            "warning": "yellow",
-            "info": "blue",
-        }
-        color = colors.get(finding.severity.value, "white")
-
-        # Header with ID
-        header = f"[bold {color}]{finding.severity_icon}:[/] [bold][{finding.id}][/] {finding.condition}"
-        if finding.derived_from:
-            header += f" [dim](derived_from={finding.derived_from})[/]"
-        
-        self.console.print(header)
-
-        # Details
-        self.console.print(f"   [dim]Cause:[/] {finding.cause}")
-        self.console.print(f"   [dim]Confidence:[/] {finding.confidence:.0%}")
-
-        # Evidence
-        self.console.print("   [dim]Evidence:[/]")
-        for evidence in finding.evidence:
-            self.console.print(f"      - {evidence.source_file}:{evidence.line_number}")
-            if evidence.excerpt:
-                self.console.print(f"         [italic]{evidence.excerpt}[/]")
-
-        # Treatment
-        if finding.treatment:
-            treatment_text = str(finding.treatment)
-            if "\n" in treatment_text:
-                # Multi-line block
-                from rich.panel import Panel
-                self.console.print("   [dim]Treatment:[/]")
+        """Print a single finding with format-aware logic."""
+        if self.format_mode == "plain":
+            severity_label = f"[{finding.severity.value.upper()}]"
+            title = f"{finding.id}: {finding.condition}"
+            if finding.derived_from:
+                title += f" (derived_from={finding.derived_from})"
                 
-                is_command = "sudo " in treatment_text
-                title = "[bold white]Terminal Action[/]" if is_command else "[bold white]Configuration Change[/]"
-                border = "green" if is_command else "blue"
-                
-                self.console.print(
-                    Panel(
-                        f"[green]{treatment_text}[/]" if is_command else f"[blue]{treatment_text}[/]",
-                        title=title,
-                        title_align="left",
-                        border_style=border,
-                        padding=(1, 2)
+            self.console.print(f"\n{severity_label}: {title}")
+            self.console.print(f"   Cause: {finding.cause}")
+            self.console.print(f"   Confidence: {finding.confidence:.0%}")
+            
+            if finding.evidence:
+                self.console.print("   Evidence:")
+                for ev in finding.evidence:
+                    # STRICT SINGLE LINE
+                    line = f"      - file={ev.source_file} line={ev.line_number}"
+                    if ev.excerpt:
+                        # Sanitize newlines in excerpt
+                        clean_excerpt = ev.excerpt.replace('\n', ' ').strip()
+                        line += f" excerpt=\"{clean_excerpt}\""
+                    self.console.print(line)
+
+            if finding.treatment:
+                self.console.print("   Treatment:")
+                # Pre-formatted block for plain text
+                treatment_lines = str(finding.treatment).split('\n')
+                for line in treatment_lines:
+                    self.console.print(f"      {line}")
+            
+            if finding.impact:
+                self.console.print("   Impact if ignored:")
+                for impact in finding.impact:
+                    self.console.print(f"      ! {impact}")
+                    
+        else:
+            # Rich Mode (Existing logic with enhancements)
+            color = "white"
+            icon = "i"
+            if finding.severity == Severity.CRITICAL:
+                color = "red"
+                icon = "x"
+            elif finding.severity == Severity.WARNING:
+                color = "yellow"
+                icon = "!"
+
+            title = f"[{color}][{finding.severity.value}] {icon} [{finding.id}] {finding.condition}[/]"
+            if finding.derived_from:
+                title += f" [dim](derived_from={finding.derived_from})[/]"
+            
+            self.console.print(title)
+            self.console.print(f"   [dim]Cause:[/] {finding.cause}")
+            self.console.print(f"   [dim]Confidence:[/] {finding.confidence:.0%}")
+
+            self.console.print("   [dim]Evidence:[/]")
+            for evidence in finding.evidence:
+                # Rich auto-wraps, but we can try to keep it cleaner
+                loc = f"{evidence.source_file}:{evidence.line_number}"
+                self.console.print(f"      - {loc}")
+                if evidence.excerpt:
+                    self.console.print(f"         [italic]{evidence.excerpt}[/]")
+
+            if finding.treatment:
+                treatment_text = str(finding.treatment)
+                if "\n" in treatment_text:
+                    # Panel logic for rich mode
+                    from rich.panel import Panel
+                    self.console.print("   [dim]Treatment:[/]")
+                    is_command = "sudo " in treatment_text
+                    title = "[bold white]Terminal Action[/]" if is_command else "[bold white]Configuration Change[/]"
+                    border = "green" if is_command else "blue"
+                    
+                    self.console.print(
+                        Panel(
+                            f"[green]{treatment_text}[/]" if is_command else f"[blue]{treatment_text}[/]",
+                            title=title,
+                            title_align="left",
+                            border_style=border,
+                            padding=(1, 2)
+                        )
                     )
-                )
-            else:
-                self.console.print(f"   [dim]Treatment:[/] [green]{finding.treatment}[/]")
+                else:
+                    self.console.print(f"   [dim]Treatment:[/] [green]{finding.treatment}[/]")
 
-        # Impact
-        if finding.impact:
-            self.console.print("   [dim]Impact if ignored:[/]")
-            for impact in finding.impact:
-                self.console.print(f"      ! {impact}")
-
-        self.console.print()
+            if finding.impact:
+                self.console.print("   [dim]Impact if ignored:[/]")
+                for impact in finding.impact:
+                    self.console.print(f"      ! {impact}")
+            
+            self.console.print()
 
     def report_recommendations(self, recommendations: list[Recommendation]) -> None:
         """Display recommendations with ranked solutions."""
         if not recommendations:
+            return
+        if self.format_mode == "json": return
+        
+        if self.format_mode == "plain":
+            self.console.print("\nRecommendations:")
+            for rec in recommendations:
+                self.console.print(f"\n* {rec.summary}")
+                for sol in rec.solutions:
+                    self.console.print(f"  - [{sol.rank.value.upper()}] {sol.description}")
+                    if sol.steps:
+                        for i, step in enumerate(sol.steps, 1):
+                            self.console.print(f"      {i}. {step}")
+                    if sol.warnings:
+                        for warning in sol.warnings:
+                            self.console.print(f"      WARNING: {warning}")
             return
 
         self.console.print()
@@ -235,14 +298,93 @@ class ReportAction:
                 # Shorten socket path for display
                 socket_display = p.php_socket.split("/")[-1] if p.php_socket else "[dim]—[/]"
 
-                table.add_row(
-                    display_name,
-                    p.type.value,
-                    f"[{conf_style}]{p.confidence:.0%}[/]",
-                    socket_display,
-                )
+                table.add_row(display_name, f"[{conf_style}]{p.type.value}[/]", f"[{conf_style}]{p.confidence:.0%}[/]", socket_display)
 
             self.console.print(table)
+
+    def report_inventory(self, inventory: list[dict], base_path: str) -> None:
+        """Report filesystem inventory discovery results."""
+        if self.format_mode == "json":
+            import json
+            # Convert enums values
+            clean_inv = []
+            for item in inventory:
+                new_item = item.copy()
+                new_item['type'] = item['type'].value
+                if item['nginx_project']:
+                    # Serialize Nginx project info partially
+                    new_item['nginx_project'] = {
+                        'path': item['nginx_project'].path,
+                        'type': item['nginx_project'].type.value,
+                        'conf': item['nginx_project'].confidence
+                    }
+                else:
+                    new_item['nginx_project'] = None
+                # Serialize scan data partially (exclude complex objects)
+                new_item['scan'] = {
+                    'files': item['nginx_project'].scan.files if item.get('nginx_project') and hasattr(item['nginx_project'], 'scan') else [],
+                    # Simplified
+                }
+                # Actually, simpler to just dump basics
+                del new_item['scan'] 
+                clean_inv.append(new_item)
+            self.console.print(json.dumps(clean_inv, indent=2))
+            return
+
+        # Prepare categories
+        configured = [i for i in inventory if i['status'] == "configured"]
+        unreferenced = [i for i in inventory if i['status'] == "unreferenced" and i['type'].value != "unknown"]
+        noise = [i for i in inventory if i['status'] == "unreferenced" and i['type'].value == "unknown"]
+
+        if self.format_mode == "plain":
+            self.console.print(f"\nFilesystem Discovery Report (Base: {base_path})")
+            self.console.print(f"Total Folders Scanned: {len(inventory)}")
+            self.console.print(f"Configured in Nginx: {len(configured)}")
+            self.console.print(f"Unreferenced Projects: {len(unreferenced)}")
+            self.console.print(f"Static/Noise: {len(noise)}")
+            
+            if unreferenced:
+                self.console.print("\n⚠️  Unreferenced Projects (Orphaned):")
+                for item in unreferenced:
+                    self.console.print(f"   - {item['path']} ({item['type'].value}) [Conf: {item.get('conf', 0):.0%}]")
+            
+            if configured:
+                 self.console.print("\n✅ Configured Projects:")
+                 for item in configured:
+                     self.console.print(f"   - {item['path']} (Matched Nginx root)")
+            return
+
+        # Rich Mode
+        from rich.table import Table
+        from rich.panel import Panel
+
+        self.console.print()
+        self.console.print(Panel(
+            f"[bold]Filesystem Inventory: {base_path}[/]\n"
+            f"Active: [green]{len(configured)}[/] | Unreferenced: [yellow]{len(unreferenced)}[/] | Noise: [dim]{len(noise)}[/]",
+            title="🔍 Discovery Results",
+            border_style="cyan"
+        ))
+        
+        if unreferenced:
+            table = Table(title="⚠️  Unreferenced Projects (On Disk but Not in Nginx)", show_header=True)
+            table.add_column("Path", style="yellow")
+            table.add_column("Detected Type")
+            table.add_column("Confidence")
+            
+            for item in unreferenced:
+                table.add_row(
+                    item['path'],
+                    item['type'].value,
+                    f"{item.get('conf',0):.0%}"
+                )
+            self.console.print(table)
+            
+        if configured:
+            self.console.print(f"\n[green]✅ Found {len(configured)} projects correctly configured in Nginx.[/]")
+            
+        if noise:
+            self.console.print(f"[dim]Note: {len(noise)} folders skipped as static/unknown (e.g. {noise[0]['path']}...)[/]")
 
     def _find_php_socket_for_project(self, model: ServerModel, project_path: str) -> str | None:
         """Find the PHP socket used by a project via nginx fastcgi_pass."""

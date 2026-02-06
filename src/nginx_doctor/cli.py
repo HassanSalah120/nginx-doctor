@@ -8,6 +8,7 @@ IMPORTANT: This module only ORCHESTRATES. It never reasons or makes decisions.
 - Formats output
 """
 
+import contextlib
 import click
 from rich.console import Console
 from rich.panel import Panel
@@ -245,18 +246,24 @@ def scan(ctx: click.Context, server: str, output_format: str | None) -> None:
 
 @main.command()
 @click.argument("server")
-@click.option("--json", "output_format", flag_value="json", help="Output as JSON")
-@click.option("--yaml", "output_format", flag_value="yaml", help="Output as YAML")
+@click.option("--format", "fmt", type=click.Choice(["rich", "plain", "json"]), default=None, help="Output format (rich/plain/json)")
 @click.pass_context
-def diagnose(ctx: click.Context, server: str, output_format: str | None) -> None:
+def diagnose(ctx: click.Context, server: str, fmt: str | None) -> None:
     """Run full diagnosis on a server.
 
     Identifies misconfigurations with evidence-based findings.
     """
+    import sys
     cfg = _resolve_config(ctx, server)
+    
+    # Auto-detect format if not specified
+    if fmt is None:
+        fmt = "plain" if not sys.stdout.isatty() else "rich"
+
     try:
         with SSHConnector(cfg) as ssh:
-            model = _scan_server(ctx, ssh)
+            with console.status(f"🔍 Scanning server...", spinner="dots") if fmt == "rich" else contextlib.nullcontext():
+                model = _scan_server(ctx, ssh)
             
             # Run analyzers
             dr_analyzer = NginxDoctorAnalyzer(model)
@@ -264,18 +271,131 @@ def diagnose(ctx: click.Context, server: str, output_format: str | None) -> None
             
             findings = dr_analyzer.diagnose(additional_findings=auditor.audit())
             
-            reporter = ReportAction(console)
+            # Report with selected format
+            reporter = ReportAction(console, format_mode=fmt)
             
-            if output_format:
-                reporter.export_findings(findings, output_format)
-            else:
-                reporter.report_findings(findings)
+            # Only show summary table in rich/plain mode (not json)
+            if fmt != "json":
+                reporter.report_server_summary(model)
+            
+            exit_code = reporter.report_findings(findings)
             
             # Store in context in case user wants to pipe to recommend
             ctx.obj['findings'] = findings
             ctx.obj['model'] = model
+            
+            sys.exit(exit_code)
+            
+    except SystemExit:
+        raise
     except Exception as e:
         console.print(f"[bold red]Error:[/] {e}")
+        import traceback
+        traceback.print_exc()
+
+
+@main.command()
+@click.argument("server")
+@click.option("--base", default="/var/www", help="Base directory to scan (default: /var/www)")
+@click.option("--format", "fmt", type=click.Choice(["rich", "plain", "json"]), default=None)
+@click.pass_context
+def discover(ctx: click.Context, server: str, base: str, fmt: str | None) -> None:
+    """Discover filesystem projects and match with Nginx.
+    
+    Reveals orphaned projects that exist on disk but are not served by Nginx.
+    """
+    import sys
+    cfg = _resolve_config(ctx, server)
+    
+    if fmt is None:
+        fmt = "plain" if not sys.stdout.isatty() else "rich"
+        
+    # Import needed classes locally to avoid circular dependencies if any
+    from nginx_doctor.scanner.filesystem import FilesystemScanner
+    from nginx_doctor.analyzer.app_detector import AppDetector
+
+    try:
+        with SSHConnector(cfg) as ssh:
+            # 1. Get Truth (Nginx)
+            with console.status(f"🔍 Scanning active Nginx config...", spinner="dots") if fmt == "rich" else contextlib.nullcontext():
+                model = _scan_server(ctx, ssh)
+            
+            # 2. Get Inventory (Filesystem)
+            fs_scanner = FilesystemScanner(ssh)
+            detector = AppDetector()
+            
+            with console.status(f"📂 Crawling {base}...", spinner="dots") if fmt == "rich" else contextlib.nullcontext():
+                candidate_paths = fs_scanner.crawl_projects(base)
+                
+            filesystem_projects = []
+            
+            # Analyze each candidate
+            with console.status(f"🕵️ Analyzing {len(candidate_paths)} folders...", spinner="dots") if fmt == "rich" else contextlib.nullcontext():
+                for path in candidate_paths:
+                    d_scan = fs_scanner.scan_directory(path)
+                    
+                    # Check for composer usage to improve detection
+                    composer_data = None
+                    if d_scan.has_composer_json:
+                        content = fs_scanner.get_file_content(f"{path}/composer.json")
+                        if content:
+                            try:
+                                import json
+                                composer_data = json.loads(content)
+                            except: pass
+                            
+                    detection = detector.detect(d_scan, composer_data)
+                    
+                    # Create ProjectInfo (lightweight version)
+                    filesystem_projects.append({
+                        "path": path,
+                        "type": detection.project_type,
+                        "conf": detection.confidence,
+                        "scan": d_scan
+                    })
+
+            # 3. Correlate
+            # Map Nginx roots to these fs paths
+            # Logic: If Nginx root is /var/www/foo/public, it matches /var/www/foo
+            
+            inventory = []
+            
+            for fs_proj in filesystem_projects:
+                path = fs_proj['path']
+                status = "unreferenced"
+                matched_nginx_project = None
+                
+                # Check against Nginx projects
+                for nginx_proj in model.projects:
+                    # Check exact or subpath logic
+                    # If nginx project path (normalized) is inside fs path or equals
+                    # NginxScanner normalizes roots to project base usually.
+                    if nginx_proj.path == path:
+                        status = "configured"
+                        matched_nginx_project = nginx_proj
+                        break
+                    
+                    # Also check if nginx root starts with this fs path (e.g. fs=/var/www/app, nginx=/var/www/app/public)
+                    if nginx_proj.path.startswith(path + "/"):
+                         status = "configured"
+                         matched_nginx_project = nginx_proj
+                         break
+                
+                inventory.append({
+                    "path": path,
+                    "type": fs_proj['type'],
+                    "status": status,
+                    "nginx_project": matched_nginx_project
+                })
+                
+            # Report
+            reporter = ReportAction(console, format_mode=fmt)
+            reporter.report_inventory(inventory, base)
+            
+    except Exception as e:
+        console.print(f"[bold red]Error:[/] {e}")
+        import traceback
+        traceback.print_exc()
 
 
 @main.command()

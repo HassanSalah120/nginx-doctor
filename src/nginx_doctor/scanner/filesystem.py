@@ -167,3 +167,35 @@ class FilesystemScanner:
     def get_file_content(self, path: str) -> str | None:
         """Read file content from remote server."""
         return self.ssh.read_file(path)
+    def crawl_projects(self, base_path: str = "/var/www") -> list[str]:
+        """Crawl a base directory to find headers of potential projects.
+        
+        Args:
+            base_path: The directory to search within (depth 1).
+            
+        Returns:
+            List of detected project paths.
+        """
+        projects = []
+        if not self.ssh.dir_exists(base_path):
+            return []
+            
+        result = self.ssh.run(f"ls -1F {base_path}")
+        if not result.success:
+            return []
+            
+        items = result.stdout.strip().split("\n")
+        for item in items:
+            if not item.endswith("/"): # Skip files
+                continue
+            
+            # Remove trailing slash
+            folder_name = item.strip("/")
+            
+            # Skip obvious non-projects or noise if desired, but user wants visibility
+            if folder_name in (".", "..", ".git"): 
+                continue
+                
+            projects.append(f"{base_path}/{folder_name}")
+            
+        return projects

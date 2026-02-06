@@ -44,48 +44,100 @@ class ServerAuditor:
         if not self.model.nginx:
             return findings
 
+        # Group projects by exposure status
+        exposed_projects = []
+        safe_but_exists = []
+
         for project in self.model.projects:
             if not project.env_path:
                 continue
 
-            # Check if there's a location block blocking .env access
-            has_env_protection = False
-
+            # 1. Determine if .env is inside an ACTIVE Nginx root
+            is_reachable = False
+            relevant_servers = []
+            
             for server in self.model.nginx.servers:
-                for location in server.locations:
-                    # Look for patterns like `location ~ /\.` or specific .env blocks
-                    if ".env" in location.path or "/\\." in location.path:
-                        has_env_protection = True
+                # Check root directive
+                roots = [server.root] if server.root else []
+                for loc in server.locations:
+                    if loc.root: roots.append(loc.root)
+                    if loc.alias: roots.append(loc.alias)
+                
+                # If project.env_path starts with any of these roots, it MIGHT be reachable
+                # Example: env=/var/www/app/.env, root=/var/www/app -> Reachable
+                # Example: env=/var/www/app/.env, root=/var/www/app/public -> Not Reachable
+                for r in roots:
+                    if not r: continue
+                    # Normalize for comparison
+                    r_norm = r.rstrip("/")
+                    env_dir = project.path.rstrip("/") # project.path is where .env lives usually
+                    
+                    if project.env_path.startswith(r_norm):
+                        is_reachable = True
+                        relevant_servers.append(server)
                         break
+                
+                if is_reachable: break
 
-            if not has_env_protection:
-                findings.append(
-                    Finding(
-                        severity=Severity.WARNING,
-                        confidence=0.70,
-                        condition=".env file may be exposed",
-                        cause=f"No nginx location block found to protect .env at {project.env_path}",
-                        evidence=[
-                            Evidence(
-                                source_file=project.env_path,
-                                line_number=1,
-                                excerpt=".env file exists",
-                                command="filesystem scan",
-                            )
-                        ],
-                        treatment=(
-                            "Add to nginx config:\n"
-                            "location ~ /\\.(?!well-known).* {\n"
-                            "    deny all;\n"
-                            "}"
-                        ),
-                        impact=[
-                            "Database credentials could be exposed",
-                            "API keys could be leaked",
-                            "Security vulnerability",
-                        ],
-                    )
+            # 2. If reachable, check for protection
+            if is_reachable:
+                is_protected = False
+                for server in relevant_servers:
+                    for location in server.locations:
+                        # Detect deny rules: location ~ /\. or location ~ .env
+                        if (r"\." in location.path or ".env" in location.path) and "deny all" in self.model.nginx.raw:
+                             # This is a weak check on raw config, ideally we check the deny directive in the location
+                             # But our model doesn't parse 'deny', so we assume if we see a dot-file location, it's likely for protection
+                             # A stronger check would be good, but this reduces false positives from "no location found"
+                             is_protected = True
+                             break
+                    if is_protected: break
+                
+                if not is_protected:
+                    exposed_projects.append(project.path)
+            else:
+                # Exists but outside root (e.g. Laravel standard)
+                safe_but_exists.append(project.path)
+
+        # Create consolidated findings
+        if exposed_projects:
+            findings.append(
+                Finding(
+                    severity=Severity.WARNING,
+                    confidence=0.85,
+                    condition=".env file may be exposed",
+                    cause=f"Found .env files within Nginx document root without obvious protection",
+                    evidence=[
+                        Evidence(source_file=p, line_number=1, excerpt=".env inside web root", command="filesystem scan") 
+                        for p in exposed_projects
+                    ],
+                    treatment=(
+                        "Add protection block:\n"
+                        "location ~ /\\.(?!well-known).* {\n"
+                        "    deny all;\n"
+                        "}"
+                    ),
+                    impact=["Database credentials exposed", "API keys leaked"],
                 )
+            )
+
+        # Optional: Info for safe files if verbosity needed, or just skip
+        # User requested rigorous check: "INFO if .env exists but is outside root"
+        if safe_but_exists:
+             findings.append(
+                Finding(
+                    severity=Severity.INFO,
+                    confidence=0.60,
+                    condition=".env file exists (likely safe)",
+                    cause=f"Found .env files, but they appear to be outside the public web root",
+                    evidence=[
+                        Evidence(source_file=p, line_number=1, excerpt=".env outside root", command="filesystem scan") 
+                        for p in safe_but_exists
+                    ],
+                    treatment="Ensure permissions are 600 or 640 (owner read-only)",
+                    impact=["Compliance check"],
+                )
+            )
 
         return findings
 
