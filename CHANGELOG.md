@@ -7,7 +7,8 @@ All notable changes to this project will be documented in this file.
 ### Added
 
 - **Filesystem Discovery Mode**: New `discover` command to audit the filesystem for orphaned projects not served by Nginx.
-- **Output Formats**: Added `--format` flag supporting `rich` (default for TTY), `plain` (text-only, pipe-friendly), and `json` (machine-readable).
+- **Web View Report**: Added `--format html` support to generate beautiful, interactive HTML dashboards for both diagnosis and inventory tasks.
+- **Output Formats**: Added `--format` flag supporting `rich` (default for TTY), `plain` (text-only, pipe-friendly), `json` (machine-readable), and `html`.
 - **Auto-Plain Mode**: Automatically switches to plain text output when redirection or piping is detected.
 
 ### Changed

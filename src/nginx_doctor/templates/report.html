@@ -1,0 +1,523 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Nginx Doctor - Diagnostic Report: {{ model.hostname }}</title>
+    <style>
+      :root {
+        --bg: #0f172a;
+        --card-bg: rgba(30, 41, 59, 0.7);
+        --accent: #38bdf8;
+        --text-main: #f1f5f9;
+        --text-dim: #94a3b8;
+        --critical: #ef4444;
+        --warning: #f59e0b;
+        --info: #3b82f6;
+        --success: #10b981;
+        --glass: rgba(255, 255, 255, 0.05);
+        --glass-border: rgba(255, 255, 255, 0.1);
+      }
+
+      * {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family:
+          "Inter",
+          -apple-system,
+          BlinkMacSystemFont,
+          "Segoe UI",
+          Roboto,
+          sans-serif;
+        background-color: var(--bg);
+        color: var(--text-main);
+        line-height: 1.6;
+        padding-bottom: 4rem;
+      }
+
+      .container {
+        max-width: 1000px;
+        margin: 0 auto;
+        padding: 2rem;
+      }
+
+      header {
+        margin-bottom: 3rem;
+        text-align: center;
+      }
+
+      h1 {
+        font-size: 2.5rem;
+        margin-bottom: 0.5rem;
+        background: linear-gradient(135deg, var(--accent), #818cf8);
+        -webkit-background-clip: text;
+        -webkit-text-fill-color: transparent;
+      }
+
+      .server-badge {
+        display: inline-block;
+        padding: 0.5rem 1rem;
+        background: var(--glass);
+        border: 1px solid var(--glass-border);
+        border-radius: 9999px;
+        font-family: monospace;
+        color: var(--accent);
+        margin-top: 1rem;
+      }
+
+      .grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 1.5rem;
+        margin-bottom: 3rem;
+      }
+
+      .card {
+        background: var(--card-bg);
+        backdrop-filter: blur(12px);
+        border: 1px solid var(--glass-border);
+        border-radius: 1rem;
+        padding: 1.5rem;
+        transition: transform 0.2s;
+      }
+
+      .card:hover {
+        transform: translateY(-4px);
+      }
+
+      .card-title {
+        color: var(--text-dim);
+        font-size: 0.875rem;
+        text-transform: uppercase;
+        letter-spacing: 0.05em;
+        margin-bottom: 0.5rem;
+      }
+
+      .card-value {
+        font-size: 1.5rem;
+        font-weight: 700;
+      }
+
+      .section-title {
+        font-size: 1.5rem;
+        margin-bottom: 1.5rem;
+        display: flex;
+        align-items: center;
+        gap: 0.75rem;
+      }
+
+      .finding {
+        background: var(--card-bg);
+        border: 1px solid var(--glass-border);
+        border-radius: 1rem;
+        margin-bottom: 2rem;
+        overflow: hidden;
+        display: flex;
+        flex-direction: column;
+      }
+
+      .finding-header {
+        padding: 1.25rem 1.5rem;
+        display: flex;
+        justify-content: space-between;
+        align-items: center;
+        border-bottom: 1px solid var(--glass-border);
+      }
+
+      .severity-badge {
+        font-size: 0.75rem;
+        font-weight: 700;
+        padding: 0.25rem 0.75rem;
+        border-radius: 9999px;
+        text-transform: uppercase;
+      }
+
+      .sev-critical {
+        background: rgba(239, 68, 68, 0.2);
+        color: #fca5a5;
+        border: 1px solid rgba(239, 68, 68, 0.3);
+      }
+      .sev-warning {
+        background: rgba(245, 158, 11, 0.2);
+        color: #fcd34d;
+        border: 1px solid rgba(245, 158, 11, 0.3);
+      }
+      .sev-info {
+        background: rgba(59, 130, 246, 0.2);
+        color: #93c5fd;
+        border: 1px solid rgba(59, 130, 246, 0.3);
+      }
+
+      .finding-id {
+        font-family: monospace;
+        color: var(--text-dim);
+      }
+
+      .finding-body {
+        padding: 1.5rem;
+      }
+
+      .finding-condition {
+        font-size: 1.25rem;
+        font-weight: 600;
+        margin-bottom: 0.75rem;
+      }
+
+      .finding-cause {
+        color: var(--text-dim);
+        margin-bottom: 1.5rem;
+      }
+
+      .evidence-list {
+        list-style: none;
+        margin-bottom: 1.5rem;
+        background: rgba(0, 0, 0, 0.2);
+        border-radius: 0.5rem;
+        padding: 1rem;
+      }
+
+      .evidence-item {
+        margin-bottom: 1rem;
+      }
+
+      .evidence-item:last-child {
+        margin-bottom: 0;
+      }
+
+      .evidence-loc {
+        font-family: monospace;
+        font-size: 0.875rem;
+        color: var(--accent);
+        display: block;
+        margin-bottom: 0.25rem;
+      }
+
+      .evidence-excerpt {
+        font-family: monospace;
+        font-size: 0.875rem;
+        background: rgba(0, 0, 0, 0.3);
+        padding: 0.5rem;
+        border-radius: 0.25rem;
+        display: block;
+        white-space: pre-wrap;
+        border-left: 2px solid var(--accent);
+      }
+
+      .treatment-panel {
+        background: rgba(16, 185, 129, 0.1);
+        border: 1px solid rgba(16, 185, 129, 0.2);
+        border-radius: 0.75rem;
+        padding: 1.25rem;
+      }
+
+      .treatment-type {
+        font-size: 0.75rem;
+        font-weight: 700;
+        color: var(--success);
+        text-transform: uppercase;
+        margin-bottom: 0.5rem;
+        display: block;
+      }
+
+      .treatment-cmd {
+        font-family: "Fira Code", monospace;
+        color: #d1fae5;
+        background: rgba(0, 0, 0, 0.4);
+        padding: 1rem;
+        border-radius: 0.5rem;
+        margin-top: 0.5rem;
+        display: block;
+        overflow-x: auto;
+      }
+
+      .impact-list {
+        margin-top: 1rem;
+        padding-left: 1.5rem;
+        color: #fca5a5;
+      }
+
+      .stat-circle {
+        width: 120px;
+        height: 120px;
+        border-radius: 50%;
+        border: 8px solid var(--glass-border);
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        flex-direction: column;
+        margin: 0 auto 1rem;
+      }
+
+      .stat-num {
+        font-size: 2rem;
+        font-weight: 800;
+      }
+
+      .stat-label {
+        font-size: 0.75rem;
+        color: var(--text-dim);
+        text-transform: uppercase;
+      }
+
+      .project-table {
+        width: 100%;
+        border-collapse: collapse;
+        margin-top: 1rem;
+      }
+
+      .project-table th {
+        text-align: left;
+        padding: 1rem;
+        border-bottom: 2px solid var(--glass-border);
+        color: var(--text-dim);
+        font-size: 0.875rem;
+      }
+
+      .project-table td {
+        padding: 1rem;
+        border-bottom: 1px solid var(--glass-border);
+      }
+
+      .conf-high {
+        color: var(--success);
+      }
+      .conf-med {
+        color: var(--warning);
+      }
+      .conf-low {
+        color: var(--critical);
+      }
+
+      footer {
+        text-align: center;
+        margin-top: 4rem;
+        color: var(--text-dim);
+        font-size: 0.875rem;
+      }
+
+      @media (max-width: 768px) {
+        .container {
+          padding: 1rem;
+        }
+      }
+    </style>
+  </head>
+  <body>
+    <div class="container">
+      <header>
+        <h1>🩺 Nginx Doctor</h1>
+        <p>Intelligent Server Diagnostic Report</p>
+        <div class="server-badge">{{ model.hostname }}</div>
+      </header>
+
+      <section>
+        <div class="section-title">📊 Overview</div>
+        <div class="grid">
+          <div class="card">
+            <div class="card-title">Operating System</div>
+            <div class="card-value">
+              {{ model.os.full_name if model.os else 'Unknown' }}
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">Nginx Version</div>
+            <div class="card-value">
+              {{ model.nginx.version if model.nginx else 'Not Found' }}
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">PHP Versions</div>
+            <div class="card-value">
+              {{ model.php.versions|join(', ') if model.php else 'Not Found' }}
+            </div>
+          </div>
+          <div class="card">
+            <div class="card-title">FPM Sockets</div>
+            <div class="card-value">
+              {{ model.php.sockets|length if model.php else 0 }}
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="section-title">🚀 Configured Projects</div>
+        <div class="card" style="padding: 0; overflow-x: auto">
+          <table class="project-table">
+            <thead>
+              <tr>
+                <th>Path</th>
+                <th>Type</th>
+                <th>Confidence</th>
+                <th>PHP Socket</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% if model.projects %}
+                {% for project in model.projects %}
+                <tr>
+                  <td style="font-family: monospace">{{ project.path }}</td>
+                  <td>
+                    <span class="severity-badge sev-info"
+                      >{{ project.type.value if project.type and project.type.value else project.type }}</span
+                    >
+                  </td>
+                  <td>
+                    <span
+                      class="{% if project.confidence >= 0.9 %}conf-high{% elif project.confidence >= 0.7 %}conf-med{% else %}conf-low{% endif %}"
+                    >
+                      {{ (project.confidence * 100)|round|int if project.confidence else 0 }}%
+                    </span>
+                  </td>
+                  <td style="font-family: monospace; font-size: 0.8rem">
+                    {{ project.php_socket or '-' }}
+                  </td>
+                </tr>
+                {% endfor %}
+              {% else %}
+                <tr><td colspan="4" style="text-align: center; color: var(--text-dim);">No active projects found in Nginx configuration.</td></tr>
+              {% endif %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      {% if unreferenced %}
+      <section style="margin-top: 3rem">
+        <div class="section-title">⚠️ Unreferenced Projects (Orphaned)</div>
+        <div class="card" style="padding: 0; overflow-x: auto; border-color: var(--warning)">
+          <table class="project-table">
+            <thead>
+              <tr>
+                <th>Path</th>
+                <th>Detected Type</th>
+                <th>Status</th>
+              </tr>
+            </thead>
+            <tbody>
+              {% for project in unreferenced %}
+              <tr>
+                <td style="font-family: monospace">{{ project.path }}</td>
+                <td>
+                  <span class="severity-badge sev-warning"
+                    >{{ project.type.value if project.type and project.type.value else project.type }}</span
+                  >
+                </td>
+                <td>On Disk Only</td>
+              </tr>
+              {% endfor %}
+            </tbody>
+          </table>
+        </div>
+      </section>
+      {% endif %}
+
+      {% if static_noise %}
+      <section style="margin-top: 3rem">
+        <div class="section-title">📁 Static / Noise Folders</div>
+        <div class="card" style="padding: 1rem; border-color: var(--glass-border)">
+          <div style="display: flex; flex-wrap: wrap; gap: 0.5rem">
+            {% for path in static_noise %}
+            <span class="server-badge" style="margin: 0; font-size: 0.75rem"
+              >{{ path }}</span
+            >
+            {% endfor %}
+          </div>
+        </div>
+      </section>
+      {% endif %}
+
+      <div style="margin-top: 4rem"></div>
+
+      <section>
+        <div class="section-title">🩺 Findings ({{ findings|length }})</div>
+
+        {% if not findings %}
+        <div
+          class="card"
+          style="text-align: center; border-color: var(--success)"
+        >
+          <div class="card-value" style="color: var(--success)">
+            ✅ No Issues Detected
+          </div>
+          <p style="color: var(--text-dim)">
+            Your Nginx configuration looks healthy!
+          </p>
+        </div>
+        {% else %} {% for finding in findings %}
+        <div class="finding">
+          <div class="finding-header">
+            <span class="severity-badge sev-{{ finding.severity.value|lower }}">
+              {{ finding.severity.value }}
+            </span>
+            <span class="finding-id">{{ finding.id }}</span>
+          </div>
+          <div class="finding-body">
+            <div class="finding-condition">{{ finding.condition }}</div>
+            <div class="finding-cause">
+              {{ finding.cause }} {% if finding.derived_from %}
+              <span style="font-style: italic; font-size: 0.8rem"
+                >(derived from {{ finding.derived_from }})</span
+              >
+              {% endif %}
+            </div>
+
+            {% if finding.evidence %}
+            <div
+              style="
+                font-size: 0.875rem;
+                margin-bottom: 0.5rem;
+                color: var(--text-dim);
+              "
+            >
+              Evidence:
+            </div>
+            <ul class="evidence-list">
+              {% for ev in finding.evidence %}
+              <li class="evidence-item">
+                <span class="evidence-loc"
+                  >{{ ev.source_file }}:{{ ev.line_number }}</span
+                >
+                {% if ev.excerpt %}
+                <span class="evidence-excerpt">{{ ev.excerpt }}</span>
+                {% endif %}
+              </li>
+              {% endfor %}
+            </ul>
+            {% endif %} {% if finding.treatment %}
+            <div class="treatment-panel">
+              <span class="treatment-type">
+                {% if "sudo" in finding.treatment|string %}Terminal Action{%
+                else %}Configuration Change{% endif %}
+              </span>
+              <code class="treatment-cmd">{{ finding.treatment }}</code>
+            </div>
+            {% endif %} {% if finding.impact %}
+            <div
+              style="
+                font-size: 0.875rem;
+                margin-top: 1.5rem;
+                color: var(--text-dim);
+              "
+            >
+              Impact if ignored:
+            </div>
+            <ul class="impact-list">
+              {% for impact in finding.impact %}
+              <li>{{ impact }}</li>
+              {% endfor %}
+            </ul>
+            {% endif %}
+          </div>
+        </div>
+        {% endfor %} {% endif %}
+      </section>
+
+      <footer>Generated by Nginx Doctor &bull; {{ now }}</footer>
+    </div>
+  </body>
+</html>

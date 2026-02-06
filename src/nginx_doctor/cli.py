@@ -17,6 +17,7 @@ from nginx_doctor import __version__
 from nginx_doctor.actions.apply import ApplyAction
 from nginx_doctor.actions.generate import GenerateAction
 from nginx_doctor.actions.report import ReportAction
+from nginx_doctor.actions.html_report import HTMLReportAction
 from nginx_doctor.analyzer.app_detector import AppDetector
 from nginx_doctor.analyzer.nginx_doctor import NginxDoctorAnalyzer
 from nginx_doctor.analyzer.server_auditor import ServerAuditor
@@ -246,9 +247,10 @@ def scan(ctx: click.Context, server: str, output_format: str | None) -> None:
 
 @main.command()
 @click.argument("server")
-@click.option("--format", "fmt", type=click.Choice(["rich", "plain", "json"]), default=None, help="Output format (rich/plain/json)")
+@click.option("--format", "fmt", type=click.Choice(["rich", "plain", "json", "html"]), default=None, help="Output format")
+@click.option("--output", "-o", default="report.html", help="Output file for HTML report")
 @click.pass_context
-def diagnose(ctx: click.Context, server: str, fmt: str | None) -> None:
+def diagnose(ctx: click.Context, server: str, fmt: str | None, output: str) -> None:
     """Run full diagnosis on a server.
 
     Identifies misconfigurations with evidence-based findings.
@@ -271,6 +273,12 @@ def diagnose(ctx: click.Context, server: str, fmt: str | None) -> None:
             
             findings = dr_analyzer.diagnose(additional_findings=auditor.audit())
             
+            if fmt == "html":
+                html_reporter = HTMLReportAction()
+                report_path = html_reporter.generate(model, findings, output_path=output)
+                console.print(f"\n[bold green]Report generated:[/] {report_path}")
+                sys.exit(0)
+
             # Report with selected format
             reporter = ReportAction(console, format_mode=fmt)
             
@@ -297,9 +305,10 @@ def diagnose(ctx: click.Context, server: str, fmt: str | None) -> None:
 @main.command()
 @click.argument("server")
 @click.option("--base", default="/var/www", help="Base directory to scan (default: /var/www)")
-@click.option("--format", "fmt", type=click.Choice(["rich", "plain", "json"]), default=None)
+@click.option("--format", "fmt", type=click.Choice(["rich", "plain", "json", "html"]), default=None)
+@click.option("--output", "-o", default="inventory.html", help="Output file for HTML report")
 @click.pass_context
-def discover(ctx: click.Context, server: str, base: str, fmt: str | None) -> None:
+def discover(ctx: click.Context, server: str, base: str, fmt: str | None, output: str) -> None:
     """Discover filesystem projects and match with Nginx.
     
     Reveals orphaned projects that exist on disk but are not served by Nginx.
@@ -389,6 +398,28 @@ def discover(ctx: click.Context, server: str, base: str, fmt: str | None) -> Non
                 })
                 
             # Report
+            if fmt == "html":
+                unreferenced = []
+                static_noise = []
+                
+                for item in inventory:
+                    if item['status'] == 'unreferenced':
+                        # Classify by type
+                        if item['type'] in [ProjectType.STATIC, ProjectType.UNKNOWN]:
+                            static_noise.append(item['path'])
+                        else:
+                            unreferenced.append(item)
+                
+                html_reporter = HTMLReportAction()
+                report_path = html_reporter.generate(
+                    model, 
+                    output_path=output, 
+                    unreferenced=unreferenced,
+                    static_noise=static_noise
+                )
+                console.print(f"\n[bold green]Inventory Report generated:[/] {report_path}")
+                sys.exit(0)
+
             reporter = ReportAction(console, format_mode=fmt)
             reporter.report_inventory(inventory, base)
             
