@@ -114,7 +114,27 @@ class ReportAction:
 
         # Treatment
         if finding.treatment:
-            self.console.print(f"   [dim]Treatment:[/] [green]{finding.treatment}[/]")
+            treatment_text = str(finding.treatment)
+            if "\n" in treatment_text:
+                # Multi-line block
+                from rich.panel import Panel
+                self.console.print("   [dim]Treatment:[/]")
+                
+                is_command = "sudo " in treatment_text
+                title = "[bold white]Terminal Action[/]" if is_command else "[bold white]Configuration Change[/]"
+                border = "green" if is_command else "blue"
+                
+                self.console.print(
+                    Panel(
+                        f"[green]{treatment_text}[/]" if is_command else f"[blue]{treatment_text}[/]",
+                        title=title,
+                        title_align="left",
+                        border_style=border,
+                        padding=(1, 2)
+                    )
+                )
+            else:
+                self.console.print(f"   [dim]Treatment:[/] [green]{finding.treatment}[/]")
 
         # Impact
         if finding.impact:

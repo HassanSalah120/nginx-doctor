@@ -140,11 +140,34 @@ class NginxScanner:
         return any(indicator in path for indicator in dynamic_indicators)
 
     def _normalize_project_path(self, path: str) -> str:
-        """Strip /public and trailing slashes from project path."""
+        """Strip internal sub-paths (public, storage, etc.) to reach the project root.
+        
+        This prevents Nginx aliases for storage or cache from being treated
+        as standalone project roots.
+        """
         path = path.strip().rstrip("/")
-        if path.endswith("/public"):
-            path = path[:-7]
-        return path
+        
+        # Patterns to walk up from
+        sub_paths = [
+            "/public",
+            "/storage/app",
+            "/storage/logs",
+            "/storage",
+            "/bootstrap/cache",
+            "/bootstrap",
+        ]
+        
+        # Iteratively strip suffixes to handle nested cases
+        changed = True
+        while changed:
+            changed = False
+            for p in sub_paths:
+                if path.endswith(p):
+                    path = path[:-len(p)]
+                    changed = True
+                    break
+        
+        return path or "/"
 
     def get_active_connections(self) -> int | None:
         """Get number of active nginx connections."""
