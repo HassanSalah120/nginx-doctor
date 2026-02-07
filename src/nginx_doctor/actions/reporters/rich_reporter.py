@@ -144,7 +144,10 @@ class RichReporter(BaseReporter):
         if model.os:
             self.console.print(f"   OS: {model.os.full_name}")
         if model.nginx:
-            self.console.print(f"   Nginx: {model.nginx.version}")
+            source_info = f"[bold]{model.nginx.mode}[/]"
+            if model.nginx.container_id:
+                source_info += f" [dim]({model.nginx.container_id[:12]})[/]"
+            self.console.print(f"   Nginx: {model.nginx.version} ({source_info})")
             self.console.print(f"   Server Blocks: {len(model.nginx.servers)}")
         if model.php:
             self.console.print(f"   PHP: {', '.join(model.php.versions)}")
@@ -163,6 +166,15 @@ class RichReporter(BaseReporter):
             self.console.print(f"   [yellow]! Projects with warnings/critical issues: {health_issues}[/]")
         if discovery_gaps:
             self.console.print(f"   [blue]i Projects with low-confidence/unknown: {discovery_gaps}[/]")
+
+        # Build Info Footer
+        if model.doctor_version:
+            build_info = f"[dim]Nginx Doctor v{model.doctor_version}[/]"
+            if model.commit_hash:
+                build_info += f" [dim]({model.commit_hash})[/]"
+            if model.scan_timestamp:
+                build_info += f" [dim]• {model.scan_timestamp[:16].replace('T', ' ')}[/]"
+            self.console.print(f"\n   {build_info}")
 
         if model.projects:
             table = Table(show_header=True)
@@ -186,6 +198,87 @@ class RichReporter(BaseReporter):
                 table.add_row(display_name, f"[{conf_style}]{p.type.value}[/]", f"[{conf_style}]{p.confidence:.0%}[/]", socket_display)
 
             self.console.print(table)
+            
+        self._report_runtime_topology(model)
+
+    def _report_runtime_topology(self, model: ServerModel) -> None:
+        """Report runtime topology (Systemd, Redis, Workers)."""
+        if not hasattr(model, "runtime"):
+            return
+            
+        from rich.columns import Columns
+        
+        # Systemd Table
+        if model.runtime.systemd_services:
+            table = Table(title="Systemd Services", show_header=True, header_style="bold blue")
+            table.add_column("Service")
+            table.add_column("State")
+            table.add_column("Restarts")
+            
+            for svc in model.runtime.systemd_services:
+                state_color = "green" if svc.state == "active" else "red"
+                restart_color = "green" if svc.restart_count < 5 else "red"
+                table.add_row(
+                    svc.name,
+                    f"[{state_color}]{svc.state}[/]/[dim]{svc.substate}[/]",
+                    f"[{restart_color}]{svc.restart_count}[/]"
+                )
+            self.console.print(table)
+            self.console.print()
+
+        # Redis Table
+        if model.runtime.redis_instances:
+            table = Table(title="Redis Instances", show_header=True, header_style="bold red")
+            table.add_column("Port")
+            table.add_column("Auth")
+            table.add_column("Binding")
+            
+            for redis in model.runtime.redis_instances:
+                auth_str = "Enabled" if redis.auth_enabled else ("Disabled" if redis.auth_enabled is False else "Unknown")
+                auth_color = "green" if redis.auth_enabled else "red"
+                bind_str = ", ".join(redis.bind_addresses)
+                bind_color = "red" if "0.0.0.0" in bind_str or "::" in bind_str else "green"
+                
+                table.add_row(
+                    str(redis.port),
+                    f"[{auth_color}]{auth_str}[/]",
+                    f"[{bind_color}]{bind_str}[/]"
+                )
+            self.console.print(table)
+            self.console.print()
+
+        # Workers Table
+        if model.runtime.worker_processes:
+            title = "Background Workers"
+            if model.runtime.scheduler_detected:
+                title += f" (Scheduler: {model.runtime.scheduler_type})"
+            else:
+                 title += " (Scheduler: [red]MISSING[/])"
+
+            table = Table(title=title, show_header=True, header_style="bold magenta")
+            table.add_column("PID")
+            table.add_column("Type")
+            table.add_column("Backend")
+            table.add_column("Command", no_wrap=True)
+            
+            for w in model.runtime.worker_processes:
+                cmd_display = w.cmdline
+                if "artisan" in w.cmdline:
+                     cmd_display = "artisan " + w.cmdline.split("artisan")[-1].strip()
+                elif "node" in w.cmdline:
+                     cmd_display = "node " + w.cmdline.split("node")[-1].strip()
+                
+                if len(cmd_display) > 50:
+                    cmd_display = cmd_display[:47] + "..."
+
+                table.add_row(
+                    str(w.pid),
+                    w.queue_type,
+                    w.backend,
+                    f"[dim]{cmd_display}[/]"
+                )
+            self.console.print(table)
+            self.console.print()
 
     def report_wss_inventory(self, inventory: list) -> None:
         """Report WebSocket inventory."""

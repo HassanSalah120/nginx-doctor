@@ -13,6 +13,8 @@ import click
 from rich.console import Console
 from rich.panel import Panel
 
+import datetime
+import subprocess
 from nginx_doctor import __version__
 from nginx_doctor.actions.apply import ApplyAction
 from nginx_doctor.actions.generate import GenerateAction
@@ -29,6 +31,15 @@ from nginx_doctor.parser.nginx_conf import NginxConfigParser
 from nginx_doctor.scanner.filesystem import FilesystemScanner
 from nginx_doctor.scanner.nginx import NginxScanner
 from nginx_doctor.scanner.php import PHPScanner
+from nginx_doctor.scanner.docker import DockerScanner
+from nginx_doctor.scanner.mysql import MySQLScanner
+from nginx_doctor.scanner.nodejs import NodeScanner
+from nginx_doctor.scanner.nodejs import NodeScanner
+from nginx_doctor.scanner.firewall import FirewallScanner
+from nginx_doctor.scanner.systemd import SystemdScanner
+from nginx_doctor.scanner.redis import RedisScanner
+from nginx_doctor.scanner.workers import WorkerScanner
+from nginx_doctor.analyzer.correlation_engine import CorrelationEngine
 from nginx_doctor.actions.safe_fix import SafeFixAction
 
 console = Console()
@@ -64,12 +75,15 @@ def _scan_server(ctx: click.Context, ssh: SSHConnector) -> ServerModel:
     """Internal helper to run all scanners and build model."""
     with console.status("[bold blue]🔍 Scanning server...[/]"):
         os_scanner = FilesystemScanner(ssh)
-        nginx_scanner = NginxScanner(ssh)
+        from nginx_doctor.scanner.nginx_collector import NginxCollector
+        collector = NginxCollector(ssh)
+        nginx_data = collector.collect()
+        
+        nginx_scanner = NginxScanner(ssh) # Keep for path normalization and sites listing
         php_scanner = PHPScanner(ssh)
         
         os_info = os_scanner.get_os_info()
         from nginx_doctor.model.server import PHPInfo
-        nginx_data = nginx_scanner.scan()
         php_data = php_scanner.scan()
         php_info = PHPInfo(
             versions=php_data.versions,
@@ -77,10 +91,55 @@ def _scan_server(ctx: click.Context, ssh: SSHConnector) -> ServerModel:
             sockets=php_data.fpm_sockets,
             fpm_configs=php_data.pool_configs,
         )
+
+        # Phase 14: Secondary Services
+        docker_scanner = DockerScanner(ssh)
+        mysql_scanner = MySQLScanner(ssh)
+        node_scanner = NodeScanner(ssh)
+        firewall_scanner = FirewallScanner(ssh)
+
+        docker_data = docker_scanner.scan()
+        mysql_data = mysql_scanner.scan()
+        node_data = node_scanner.scan()
+        firewall_state = firewall_scanner.scan()
+
+        from nginx_doctor.model.server import ServicesModel
+        services = ServicesModel(
+            docker=docker_data.status,
+            docker_containers=docker_data.containers,
+            mysql=mysql_data.status,
+            node=node_data.status,
+            node_processes=node_data.processes,
+            firewall=firewall_state
+        )
+
+        # Phase 15: Runtime Intelligence
+        systemd_scanner = SystemdScanner(ssh)
+        redis_scanner = RedisScanner(ssh)
+        worker_scanner = WorkerScanner(ssh)
+
+        systemd_data = systemd_scanner.scan()
+        redis_data = redis_scanner.scan()
+        worker_data = worker_scanner.scan()
+
+        from nginx_doctor.model.server import RuntimeModel
+        runtime = RuntimeModel(
+            systemd=systemd_data.status,
+            systemd_services=systemd_data.services,
+            redis=redis_data.status,
+            redis_instances=redis_data.instances,
+            workers=worker_data.status,
+            worker_processes=worker_data.processes,
+            scheduler_detected=worker_data.scheduler_detected,
+            scheduler_type=worker_data.scheduler_type
+        )
         
         # Parse nginx config
         parser = NginxConfigParser()
-        nginx_info = parser.parse(nginx_data.full_config, version=nginx_data.version)
+        nginx_info = parser.parse(nginx_data.config_dump, version=nginx_data.version)
+        nginx_info.mode = nginx_data.mode
+        nginx_info.container_id = nginx_data.container_id
+        nginx_info.path_mapping = nginx_data.path_mapping
         
         # PHASE 2: Discovery (Server-Block Centric)
         valid_roots, skipped_roots = nginx_scanner.get_all_roots(nginx_info)
@@ -91,8 +150,9 @@ def _scan_server(ctx: click.Context, ssh: SSHConnector) -> ServerModel:
         projects = []
         
         # 1. Collect roots grouped by server block to ensure domain association
-        server_projects: dict[str, list[str]] = {} # root -> [server_names]
-        
+        # host_path -> {"names": [domains], "source": "nginx"|"docker"|"node"}
+        candidate_roots: dict[str, dict] = {} 
+
         for server in nginx_info.servers:
             # Prefer server root
             roots = []
@@ -107,25 +167,49 @@ def _scan_server(ctx: click.Context, ssh: SSHConnector) -> ServerModel:
                         roots.append(nginx_scanner._normalize_project_path(loc.alias))
             
             for root in roots:
-                if nginx_scanner._is_dynamic_path(root):
-                    continue
-                if root not in server_projects:
-                    server_projects[root] = []
+                if nginx_scanner._is_dynamic_path(root): continue
+                actual_host_path = nginx_info.translate_path(root)
+                
+                if actual_host_path not in candidate_roots:
+                    candidate_roots[actual_host_path] = {"domains": [], "source": "nginx"}
                 names = server.server_names if server.server_names else ["default"]
                 for name in names:
-                    if name not in server_projects[root]:
-                        server_projects[root].append(name)
+                    if name not in candidate_roots[actual_host_path]["domains"]:
+                        candidate_roots[actual_host_path]["domains"].append(name)
 
-        # 2. Filter and scan unique roots
-        sorted_roots = sorted(server_projects.keys(), key=len)
-        final_roots = []
-        for root in sorted_roots:
-            # Skip if this root is a subdirectory of an already processed root
-            if any(root.startswith(r + "/") for r in final_roots):
-                continue
-            final_roots.append(root)
+        # 1.1 Discovery via Docker Bind Mounts (critical for pure proxy setups)
+        for container in services.docker_containers:
+            for mount in container.mounts:
+                if mount.get("type") == "bind":
+                    host_path = mount.get("source")
+                    if host_path:
+                        normalized_path = nginx_scanner._normalize_project_path(host_path)
+                        if normalized_path not in candidate_roots:
+                            # Associate with container name
+                            candidate_roots[normalized_path] = {"domains": [f"Docker: {container.name}"], "source": "docker"}
 
-        for site_path in final_roots:
+        # 1.2 Discovery via Node Processes (with Docker path translation)
+        for proc in services.node_processes:
+            if proc.cwd:
+                host_cwd = proc.cwd
+                source_label = f"Node PID: {proc.pid}"
+                
+                if proc.container_id:
+                    # Resolve container to translate path
+                    container = next((c for c in services.docker_containers if c.id and c.id.startswith(proc.container_id)), None)
+                    if container:
+                        host_cwd = container.translate_path(proc.cwd)
+                        source_label = f"Node in Docker: {container.name}"
+                
+                normalized_cwd = nginx_scanner._normalize_project_path(host_cwd)
+                if normalized_cwd not in candidate_roots:
+                    candidate_roots[normalized_cwd] = {"domains": [source_label], "source": "node"}
+        
+        # 1.3 Scan all unique candidates
+        unique_paths = sorted(candidate_roots.keys(), key=len)
+        projects: list[ProjectInfo] = []
+        
+        for site_path in unique_paths:
             if not ssh.dir_exists(site_path):
                 continue
                 
@@ -146,13 +230,28 @@ def _scan_server(ctx: click.Context, ssh: SSHConnector) -> ServerModel:
                 except:
                     pass
             
-            detection = detector.detect(scan_data, composer_json)
+            # Phase 14: Node support - Load package.json
+            package_content = ssh.read_file(f"{site_path}/package.json")
+            package_json = None
+            if package_content:
+                try:
+                    package_json = json.loads(package_content)
+                except:
+                    pass
+
+            detection = detector.detect(
+                scan_data, 
+                composer_json=composer_json,
+                package_json=package_json,
+                docker_containers=services.docker_containers
+            )
             
             # If it's a known asset folder and detection is weak, skip it
             if basename in asset_folders and detection.confidence < 0.5:
                 continue
             
             project_info = detector.to_project_info(scan_data, detection)
+            project_info.discovery_source = candidate_roots[site_path]["source"]
             
             # PHASE 3: Socket Mapping
             from nginx_doctor.actions.report import ReportAction
@@ -164,13 +263,38 @@ def _scan_server(ctx: click.Context, ssh: SSHConnector) -> ServerModel:
             
             projects.append(project_info)
             
-        return ServerModel(
+        # Get local git hash
+        commit_hash = "unknown"
+        try:
+            # We assume we are running from within the git repo or it's accessible
+            # If not, it will stay 'unknown'
+            commit_hash = subprocess.check_output(
+                ["git", "rev-parse", "--short", "HEAD"], 
+                stderr=subprocess.DEVNULL,
+                cwd=pathlib.Path(__file__).parent.parent.parent
+            ).decode().strip()
+        except:
+            pass
+
+        model = ServerModel(
             hostname=ssh.config.host,
             os=os_info,
             nginx=nginx_info,
+            nginx_status=nginx_data.status,
             php=php_info,
-            projects=projects
+            services=services,
+            projects=projects,
+            scan_timestamp=datetime.datetime.now().isoformat(),
+            doctor_version=__version__,
+            commit_hash=commit_hash,
+            runtime=runtime
         )
+
+        # Phase 14: Correlation
+        correlator = CorrelationEngine(model)
+        correlator.correlate_all()
+
+        return model
 
 
 @main.command()
@@ -301,10 +425,28 @@ def diagnose(
             dr_analyzer = NginxDoctorAnalyzer(model)
             auditor = ServerAuditor(model)
             
-            # Run WSS auditor
+            # Run WSS, Docker, and Node auditors
             from nginx_doctor.analyzer.wss_auditor import WSSAuditor
+            from nginx_doctor.analyzer.docker_auditor import DockerAuditor
+            from nginx_doctor.analyzer.node_auditor import NodeAuditor
+            
             wss_auditor = WSSAuditor(model)
-            legacy_findings = dr_analyzer.diagnose(additional_findings=auditor.audit() + wss_auditor.audit())
+            docker_auditor = DockerAuditor(model)
+            from nginx_doctor.analyzer.node_auditor import NodeAuditor
+            from nginx_doctor.analyzer.systemd_auditor import SystemdAuditor
+            from nginx_doctor.analyzer.redis_auditor import RedisAuditor
+            from nginx_doctor.analyzer.worker_auditor import WorkerAuditor
+            
+            wss_auditor = WSSAuditor(model)
+            docker_auditor = DockerAuditor(model)
+            node_auditor = NodeAuditor(model)
+            systemd_auditor = SystemdAuditor(model)
+            redis_auditor = RedisAuditor(model)
+            worker_auditor = WorkerAuditor(model)
+            
+            legacy_findings = dr_analyzer.diagnose(
+                additional_findings=auditor.audit() + wss_auditor.audit() + docker_auditor.audit() + node_auditor.audit() + systemd_auditor.audit() + redis_auditor.audit() + worker_auditor.audit()
+            )
             
             # Run new modular checks
             from nginx_doctor.checks import CheckContext, run_checks
@@ -325,7 +467,10 @@ def diagnose(
             )
             
             new_findings = run_checks(check_ctx)
-            findings = legacy_findings + new_findings
+            
+            # Combine and perform FINAL global deduplication
+            from nginx_doctor.engine.deduplication import deduplicate_findings
+            findings = deduplicate_findings(legacy_findings + new_findings)
             # print(f"DEBUG_CLI: findings length: {len(findings)}")
             
             if fmt == "html":

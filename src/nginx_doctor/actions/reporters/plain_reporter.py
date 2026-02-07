@@ -101,7 +101,10 @@ class PlainReporter(BaseReporter):
         if model.os:
             self.console.print(f"OS: {model.os.full_name}")
         if model.nginx:
-            self.console.print(f"Nginx: {model.nginx.version}")
+            source_info = f"{model.nginx.mode}"
+            if model.nginx.container_id:
+                source_info += f" ({model.nginx.container_id[:12]})"
+            self.console.print(f"Nginx: {model.nginx.version} (Source: {source_info})")
         if model.php:
             self.console.print(f"PHP: {', '.join(model.php.versions)}")
 

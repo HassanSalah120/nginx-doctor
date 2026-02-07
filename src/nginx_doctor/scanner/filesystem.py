@@ -39,6 +39,11 @@ class DirectoryScan:
     has_routes_dir: bool = False
     has_storage_dir: bool = False
     has_app_dir: bool = False
+    # JS / Build indicators
+    has_dist_dir: bool = False
+    has_build_dir: bool = False
+    has_out_dir: bool = False
+    has_node_modules: bool = False
     # Detected PHP socket from nginx config (if mapped)
     php_socket: str | None = None
 
@@ -113,6 +118,14 @@ class FilesystemScanner:
                 scan.has_index_html = True
             elif item == ".env":
                 scan.has_env = True
+            elif item == "dist" and is_dir:
+                scan.has_dist_dir = True
+            elif item == "build" and is_dir:
+                scan.has_build_dir = True
+            elif item == "out" and is_dir:
+                scan.has_out_dir = True
+            elif item == "node_modules" and is_dir:
+                scan.has_node_modules = True
 
 
         return scan

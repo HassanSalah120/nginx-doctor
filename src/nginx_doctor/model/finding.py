@@ -31,6 +31,7 @@ class Finding:
     evidence: list[Evidence] = field(default_factory=list)
     treatment: str = ""
     impact: list[str] = field(default_factory=list)
+    correlation: list = field(default_factory=list)  # list[CorrelationEvidence]
 
     def __post_init__(self) -> None:
         """Validate that evidence is not empty."""

@@ -27,7 +27,13 @@ class AppDetector:
     Does NOT run shell commands - operates on DirectoryScan data only.
     """
 
-    def detect(self, scan: DirectoryScan, composer_json: dict | None = None) -> DetectionResult:
+    def detect(
+        self,
+        scan: DirectoryScan,
+        composer_json: dict | None = None,
+        package_json: dict | None = None,
+        docker_containers: list["DockerContainer"] | None = None,
+    ) -> DetectionResult:
         """Detect the application type from a directory scan.
 
         Args:
@@ -104,9 +110,19 @@ class AppDetector:
 
         # Check for static site
         if scan.has_index_html:
-            project_type = ProjectType.STATIC
-            confidence = 0.95
-            reasons.append("Static HTML site (has index.html)")
+            # Distinguish between plain static and React static build
+            if scan.has_dist_dir or scan.has_build_dir or scan.has_out_dir:
+                project_type = ProjectType.REACT_STATIC_BUILD
+                confidence = 0.90
+                reasons.append("Detected static HTML with build artifacts (dist/build/out)")
+                
+                if package_json and "react" in str(package_json.get("dependencies", {})):
+                    reasons.append("package.json confirms React dependency")
+                    confidence += 0.05
+            else:
+                project_type = ProjectType.STATIC
+                confidence = 0.95
+                reasons.append("Static HTML site (has index.html)")
 
             return DetectionResult(
                 project_type=project_type,
@@ -114,18 +130,52 @@ class AppDetector:
                 reasons=reasons,
             )
 
-        # Check for SPA
+        # Check for JS / Node projects
         if scan.has_package_json:
-            project_type = ProjectType.REACT_SPA  # Default to React, could be Vue
-            confidence = 0.60
-            reasons.append("Has package.json (JavaScript project)")
+            confidence = 0.70
+            reasons.append("Found package.json (JavaScript project)")
+            
+            if package_json:
+                deps = package_json.get("dependencies", {})
+                scripts = package_json.get("scripts", {})
+                
+                if "next" in deps:
+                    project_type = ProjectType.NEXTJS
+                    confidence = 0.95
+                    reasons.append("Next.js dependency detected")
+                elif "nuxt" in deps or "nuxt3" in deps:
+                    project_type = ProjectType.NUXT
+                    confidence = 0.95
+                    reasons.append("Nuxt.js dependency detected")
+                elif "react" in deps:
+                    # If it has package.json and react but no index.html in root, likely source
+                    project_type = ProjectType.REACT_SOURCE
+                    reasons.append("React dependency in source form")
+                elif "express" in deps or "fastify" in deps or "koa" in deps:
+                    project_type = ProjectType.NODE_API
+                    reasons.append("Node.js API framework detected (Express/Fastify/Koa)")
+                else:
+                    project_type = ProjectType.NODE_API # Default for node apps
+                    reasons.append("Generic Node.js application")
 
-            # Could check for specific frameworks in package.json
             return DetectionResult(
                 project_type=project_type,
                 confidence=confidence,
                 reasons=reasons,
             )
+
+        # Check for Dockerized App (Mapping detection)
+        if docker_containers:
+            for container in docker_containers:
+                for mount in container.mounts:
+                    source = mount.get("source", "")
+                    if source and (source == scan.path or source.startswith(scan.path + "/")):
+                        # This directory is mounted into a container!
+                        return DetectionResult(
+                            project_type=ProjectType.DOCKERIZED_APP,
+                            confidence=0.85,
+                            reasons=[f"Directory mapped into Docker container '{container.name}'"],
+                        )
 
         # Unknown
         return DetectionResult(
@@ -164,4 +214,5 @@ class AppDetector:
             public_path=public_path,
             framework_version=detection.framework_version,
             env_path=f"{scan.path}/.env" if scan.has_env else None,
+            docker_container=next((r.split("'")[1] for r in detection.reasons if "Docker container" in r), None)
         )

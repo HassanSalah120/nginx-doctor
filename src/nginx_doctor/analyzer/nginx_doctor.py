@@ -46,7 +46,7 @@ class NginxDoctorAnalyzer:
         if not self.model.nginx:
             return findings
 
-        # 1. Run each diagnostic check with assigned IDs
+        # 1. Run each diagnostic check
         findings.extend(self._check_backup_configs())
         findings.extend(self._check_laravel_roots())
         findings.extend(self._check_dynamic_nginx_paths())
@@ -56,78 +56,9 @@ class NginxDoctorAnalyzer:
         findings.extend(self._check_default_sites_enabled())
         findings.extend(self._check_php_version_consistency())
         
-        # Rule ID map
-        rule_map = {
-            "Backup configuration": "NGX001",
-            "Duplicate server_name": "NGX002",
-            "PHP-FPM socket not found": "NGX003",
-            "Laravel root misconfigured": "NGX004",
-            "Missing try_files": "NGX005",
-            "Nginx config variables": "NGX006",
-            "sites-enabled only contains symlinks": "NGX007",
-            "Default nginx site still enabled": "NGX008",
-            "Multiple PHP versions installed": "NGX100",
-            "Mixed PHP versions in use": "NGX101",
-            ".env file may be exposed": "NGX200",
-            "Port 443 without SSL directive": "NGX201",
-            "SSL enabled without certificate": "NGX202",
-        }
-        
-        # 2. Assign Rule IDs and Deduplicate
-        deduped: list[Finding] = []
-        seen_keys: dict[tuple[str, str], Finding] = {} # (rule_id, condition) -> Finding
-        
-        for f in findings:
-            fid = "NGX000"
-            for pattern, rid in rule_map.items():
-                if pattern in f.condition:
-                    fid = rid
-                    break
-            
-            key = (fid, f.condition)
-            if key in seen_keys:
-                # Merge evidence into existing finding
-                base = seen_keys[key]
-                for ev in f.evidence:
-                    # Check for exact evidence duplicate
-                    if not any(e.source_file == ev.source_file and e.line_number == ev.line_number for e in base.evidence):
-                        base.evidence.append(ev)
-            else:
-                f.id = fid # Provisional ID
-                seen_keys[key] = f
-                deduped.append(f)
-        
-        findings = deduped
-
-        # 3. Instance counters for unique IDs (e.g., NGX002-1, NGX002-2)
-        instance_counters: dict[str, int] = {}
-        for f in findings:
-            rule_id = f.id
-            instance_counters[rule_id] = instance_counters.get(rule_id, 0) + 1
-            f.id = f"{rule_id}-{instance_counters[rule_id]}"
-        
-        # 4. ROOT CAUSE CHAINING: 
-        # If we have backup configs (NGX001), link and downgrade duplicate server_name (NGX002) findings.
-        backup_findings = [f for f in findings if f.id.startswith("NGX001")]
-        if backup_findings:
-            backup_files = set()
-            for bf in backup_findings:
-                backup_files.update({ev.source_file for ev in bf.evidence if ev.source_file != "nginx.conf"})
-            
-            for f in findings:
-                if f.id.startswith("NGX002"):
-                    # Check if any evidence for this duplicate comes from a backup file
-                    from_backup = any(ev.source_file in backup_files for ev in f.evidence)
-                    
-                    if from_backup:
-                        # Mark as derived from first backup finding (Rule hierarchy)
-                        f.derived_from = "NGX001"
-                        f.severity = Severity.INFO
-                        # Cleaner condition
-                        f.cause = f"{f.cause}. This is a side-effect of backup files being enabled (NGX001)."
-                        f.treatment = "Resolve primary finding NGX001: 'Backup configuration files are enabled'."
-        
-        return findings
+        # 2. Use centralized deduplication
+        from nginx_doctor.engine.deduplication import deduplicate_findings
+        return deduplicate_findings(findings)
 
     def _check_php_version_consistency(self) -> list[Finding]:
         """Check if multiple PHP versions are installed when only one might be needed."""

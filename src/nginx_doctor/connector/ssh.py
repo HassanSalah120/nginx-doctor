@@ -101,12 +101,13 @@ class SSHConnector:
         """Context manager exit."""
         self.disconnect()
 
-    def run(self, command: str, use_sudo: bool | None = None) -> CommandResult:
+    def run(self, command: str, use_sudo: bool | None = None, timeout: float | None = None) -> CommandResult:
         """Execute a command on the remote server.
 
         Args:
             command: The command to execute.
             use_sudo: Whether to use sudo. Defaults to config setting.
+            timeout: Command timeout in seconds. Defaults to config timeout.
 
         Returns:
             CommandResult with stdout, stderr, and exit_code.
@@ -123,16 +124,28 @@ class SSHConnector:
                 command = f"echo '{self.config.password}' | sudo -S {command}"
             else:
                 command = f"sudo {command}"
+        
+        # Use provided timeout or default from config
+        cmd_timeout = timeout if timeout is not None else self.config.timeout
 
-        stdin, stdout, stderr = self._client.exec_command(command, timeout=self.config.timeout)
-        exit_code = stdout.channel.recv_exit_status()
-
-        return CommandResult(
-            command=command,
-            stdout=stdout.read().decode("utf-8", errors="replace"),
-            stderr=stderr.read().decode("utf-8", errors="replace"),
-            exit_code=exit_code,
-        )
+        try:
+            stdin, stdout, stderr = self._client.exec_command(command, timeout=cmd_timeout)
+            exit_code = stdout.channel.recv_exit_status()
+            
+            return CommandResult(
+                command=command,
+                stdout=stdout.read().decode("utf-8", errors="replace"),
+                stderr=stderr.read().decode("utf-8", errors="replace"),
+                exit_code=exit_code,
+            )
+        except Exception as e:
+            # Handle timeouts or other SSH errors gracefully
+            return CommandResult(
+                command=command,
+                stdout="",
+                stderr=f"SSH Execution Error: {str(e)}",
+                exit_code=255
+            )
 
     def read_file(self, path: str) -> str | None:
         """Read file contents from remote server.

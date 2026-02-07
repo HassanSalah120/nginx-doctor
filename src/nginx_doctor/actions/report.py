@@ -120,3 +120,34 @@ class ReportAction:
         elif format == "yaml":
             import yaml
             self.console.print(yaml.dump(data, sort_keys=False))
+
+    def _find_php_socket_for_project(self, model: ServerModel, project_path: str) -> str | None:
+        """Find the FPM socket used by a specific project path."""
+        if not model.nginx:
+            return None
+            
+        # Standardize project path for comparison
+        project_path = project_path.rstrip("/")
+        
+        for server in model.nginx.servers:
+            # Check if this server block's root matches or contains the project path
+            if server.root:
+                srv_root = server.root.rstrip("/")
+                if project_path == srv_root or srv_root.startswith(project_path + "/") or project_path.startswith(srv_root + "/"):
+                    # Look for fastcgi_pass in locations
+                    for loc in server.locations:
+                        if loc.fastcgi_pass:
+                            return loc.fastcgi_pass
+            
+            # Also check locations with their own roots
+            for loc in server.locations:
+                if loc.root:
+                    loc_root = loc.root.rstrip("/")
+                    if project_path == loc_root or loc_root.startswith(project_path + "/") or project_path.startswith(loc_root + "/"):
+                        if loc.fastcgi_pass:
+                            return loc.fastcgi_pass
+                # Special case: location matching project path directly
+                if loc.path == "/" or loc.path == project_path or project_path.endswith(loc.path):
+                    if loc.fastcgi_pass:
+                        return loc.fastcgi_pass
+        return None

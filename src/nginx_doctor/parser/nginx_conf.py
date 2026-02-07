@@ -82,15 +82,19 @@ class NginxConfigParser:
 
             # Track which file we're in
             file_match = self.FILE_HEADER_RE.match(stripped)
-            # print(f"DEBUG: line='{stripped}' match={file_match}")
             if file_match:
                 ctx.current_file = file_match.group(1)
-                # print(f"DEBUG: Found file {ctx.current_file}")
                 if not info.config_path and "nginx.conf" in ctx.current_file:
                     info.config_path = ctx.current_file
                 if ctx.current_file not in info.includes:
                     info.includes.append(ctx.current_file)
+                if ctx.current_file not in info.virtual_files:
+                    info.virtual_files[ctx.current_file] = ""
                 continue
+
+            # Store line in virtual files if we have a current file
+            if ctx.current_file:
+                info.virtual_files[ctx.current_file] += line + "\n"
 
             # Skip comments and empty lines
             if not stripped or stripped.startswith("#"):

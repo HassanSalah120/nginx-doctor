@@ -1,570 +1,1151 @@
 <!doctype html>
-<html lang="en">
+<html lang="en" class="dark">
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>Nginx Doctor - Diagnostic Report: {{ model.hostname }}</title>
+    <!-- Tailwind CSS -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Google Fonts -->
+    <link
+      href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=Outfit:wght@400;500;600;700;800&display=swap"
+      rel="stylesheet"
+    />
+    <!-- Chart.js -->
+    <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+    <!-- Lucide Icons -->
+    <script src="https://unpkg.com/lucide@latest"></script>
     <style>
-      :root {
-        --bg: #0f172a;
-        --card-bg: rgba(30, 41, 59, 0.7);
-        --accent: #38bdf8;
-        --text-main: #f1f5f9;
-        --text-dim: #94a3b8;
-        --critical: #ef4444;
-        --warning: #f59e0b;
-        --info: #3b82f6;
-        --success: #10b981;
-        --glass: rgba(255, 255, 255, 0.05);
-        --glass-border: rgba(255, 255, 255, 0.1);
-      }
-
-      * {
-        box-sizing: border-box;
-        margin: 0;
-        padding: 0;
-      }
-
       body {
-        font-family:
-          "Inter",
-          -apple-system,
-          BlinkMacSystemFont,
-          "Segoe UI",
-          Roboto,
-          sans-serif;
-        background-color: var(--bg);
-        color: var(--text-main);
-        line-height: 1.6;
-        padding-bottom: 4rem;
+        font-family: "Inter", sans-serif;
+        background-color: #020617;
+        color: #f8fafc;
       }
-
-      .container {
-        max-width: 1000px;
-        margin: 0 auto;
-        padding: 2rem;
+      .heading-font {
+        font-family: "Outfit", sans-serif;
       }
-
-      header {
-        margin-bottom: 3rem;
-        text-align: center;
-      }
-
-      h1 {
-        font-size: 2.5rem;
-        margin-bottom: 0.5rem;
-        background: linear-gradient(135deg, var(--accent), #818cf8);
-        -webkit-background-clip: text;
-        background-clip: text;
-        -webkit-text-fill-color: transparent;
-      }
-
-      .server-badge {
-        display: inline-block;
-        padding: 0.5rem 1rem;
-        background: var(--glass);
-        border: 1px solid var(--glass-border);
-        border-radius: 9999px;
-        font-family: monospace;
-        color: var(--accent);
-        margin-top: 1rem;
-      }
-
-      .grid {
-        display: grid;
-        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
-        gap: 1.5rem;
-        margin-bottom: 3rem;
-      }
-
-      .card {
-        background: var(--card-bg);
+      .glass {
+        background: rgba(15, 23, 42, 0.6);
         backdrop-filter: blur(12px);
-        border: 1px solid var(--glass-border);
-        border-radius: 1rem;
-        padding: 1.5rem;
-        transition: transform 0.2s;
+        border: 1px solid rgba(255, 255, 255, 0.1);
       }
-
-      .card:hover {
-        transform: translateY(-4px);
+      .glass-hover:hover {
+        background: rgba(30, 41, 59, 0.8);
+        border: 1px solid rgba(255, 255, 255, 0.2);
       }
-
-      .card-title {
-        color: var(--text-dim);
-        font-size: 0.875rem;
-        text-transform: uppercase;
-        letter-spacing: 0.05em;
-        margin-bottom: 0.5rem;
+      .sidebar {
+        width: 280px;
+        transition: all 0.3s ease;
       }
-
-      .card-value {
-        font-size: 1.5rem;
-        font-weight: 700;
-      }
-
-      .section-title {
-        font-size: 1.5rem;
-        margin-bottom: 1.5rem;
-        display: flex;
-        align-items: center;
-        gap: 0.75rem;
-      }
-
-      .finding {
-        background: var(--card-bg);
-        border: 1px solid var(--glass-border);
-        border-radius: 1rem;
-        margin-bottom: 2rem;
-        overflow: hidden;
-        display: flex;
-        flex-direction: column;
-      }
-
-      .finding-header {
-        padding: 1.25rem 1.5rem;
-        display: flex;
-        justify-content: space-between;
-        align-items: center;
-        border-bottom: 1px solid var(--glass-border);
-      }
-
-      .severity-badge {
-        font-size: 0.75rem;
-        font-weight: 700;
-        padding: 0.25rem 0.75rem;
-        border-radius: 9999px;
-        text-transform: uppercase;
-      }
-
-      .sev-critical {
-        background: rgba(239, 68, 68, 0.2);
-        color: #fca5a5;
-        border: 1px solid rgba(239, 68, 68, 0.3);
-      }
-      .sev-warning {
-        background: rgba(245, 158, 11, 0.2);
-        color: #fcd34d;
-        border: 1px solid rgba(245, 158, 11, 0.3);
-      }
-      .sev-info {
-        background: rgba(59, 130, 246, 0.2);
-        color: #93c5fd;
-        border: 1px solid rgba(59, 130, 246, 0.3);
-      }
-
-      .finding-id {
-        font-family: monospace;
-        color: var(--text-dim);
-      }
-
-      .finding-body {
-        padding: 1.5rem;
-      }
-
-      .finding-condition {
-        font-size: 1.25rem;
-        font-weight: 600;
-        margin-bottom: 0.75rem;
-      }
-
-      .finding-cause {
-        color: var(--text-dim);
-        margin-bottom: 1.5rem;
-      }
-
-      .evidence-list {
-        list-style: none;
-        margin-bottom: 1.5rem;
-        background: rgba(0, 0, 0, 0.2);
-        border-radius: 0.5rem;
-        padding: 1rem;
-      }
-
-      .evidence-item {
-        margin-bottom: 1rem;
-      }
-
-      .evidence-item:last-child {
-        margin-bottom: 0;
-      }
-
-      .evidence-loc {
-        font-family: monospace;
-        font-size: 0.875rem;
-        color: var(--accent);
-        display: block;
-        margin-bottom: 0.25rem;
-      }
-
-      .evidence-excerpt {
-        font-family: monospace;
-        font-size: 0.875rem;
-        background: rgba(0, 0, 0, 0.3);
-        padding: 0.5rem;
-        border-radius: 0.25rem;
-        display: block;
-        white-space: pre-wrap;
-        border-left: 2px solid var(--accent);
-      }
-
-      .treatment-panel {
-        background: rgba(16, 185, 129, 0.1);
-        border: 1px solid rgba(16, 185, 129, 0.2);
-        border-radius: 0.75rem;
-        padding: 1.25rem;
-      }
-
-      .treatment-type {
-        font-size: 0.75rem;
-        font-weight: 700;
-        color: var(--success);
-        text-transform: uppercase;
-        margin-bottom: 0.5rem;
-        display: block;
-      }
-
-      .treatment-cmd {
-        font-family: "Fira Code", monospace;
-        color: #d1fae5;
-        background: rgba(0, 0, 0, 0.4);
-        padding: 1rem;
-        border-radius: 0.5rem;
-        margin-top: 0.5rem;
-        display: block;
-        overflow-x: auto;
-      }
-
-      .impact-list {
-        margin-top: 1rem;
-        padding-left: 1.5rem;
-        color: #fca5a5;
-      }
-
-      .stat-circle {
-        width: 120px;
-        height: 120px;
-        border-radius: 50%;
-        border: 8px solid var(--glass-border);
-        display: flex;
-        align-items: center;
-        justify-content: center;
-        flex-direction: column;
-        margin: 0 auto 1rem;
-      }
-
-      .stat-num {
-        font-size: 2rem;
-        font-weight: 800;
-      }
-
-      .stat-label {
-        font-size: 0.75rem;
-        color: var(--text-dim);
-        text-transform: uppercase;
-      }
-
-      .project-table {
-        width: 100%;
-        border-collapse: collapse;
-        margin-top: 1rem;
-      }
-
-      .project-table th {
-        text-align: left;
-        padding: 1rem;
-        border-bottom: 2px solid var(--glass-border);
-        color: var(--text-dim);
-        font-size: 0.875rem;
-      }
-
-      .project-table td {
-        padding: 1rem;
-        border-bottom: 1px solid var(--glass-border);
-      }
-
-      .conf-high {
-        color: var(--success);
-      }
-      .conf-med {
-        color: var(--warning);
-      }
-      .conf-low {
-        color: var(--critical);
-      }
-
-      footer {
-        text-align: center;
-        margin-top: 4rem;
-        color: var(--text-dim);
-        font-size: 0.875rem;
-      }
-
-      @media (max-width: 768px) {
-        .container {
-          padding: 1rem;
+      @media (max-width: 1024px) {
+        .sidebar {
+          display: none;
         }
       }
+      .scrollbar-hide::-webkit-scrollbar {
+        display: none;
+      }
+      .custom-gradient {
+        background: linear-gradient(135deg, #38bdf8 0%, #818cf8 100%);
+      }
     </style>
+    <script>
+      tailwind.config = {
+        darkMode: "class",
+        theme: {
+          extend: {
+            colors: {
+              critical: "#ef4444",
+              warning: "#f59e0b",
+              info: "#3b82f6",
+              success: "#10b981",
+              accent: "#38bdf8",
+              background: "#020617",
+              surface: "#0f172a",
+            },
+          },
+        },
+      };
+    </script>
   </head>
-  <body>
-    <div class="container">
-      <header>
-        <h1>🩺 Nginx Doctor</h1>
-        <p>Intelligent Server Diagnostic Report</p>
-        <div class="server-badge">{{ model.hostname }}</div>
-      </header>
+  <body class="min-h-screen">
+    <div class="flex h-screen overflow-hidden">
+      <!-- Sidebar -->
+      <aside
+        class="sidebar h-full glass border-r border-white/10 flex flex-col z-50"
+      >
+        <div class="p-8">
+          <div class="flex items-center gap-3 mb-8">
+            <div
+              class="w-10 h-10 custom-gradient rounded-xl flex items-center justify-center shadow-lg shadow-accent/20"
+            >
+              <i data-lucide="stethoscope" class="text-white w-6 h-6"></i>
+            </div>
+            <div>
+              <h1 class="heading-font text-xl font-extrabold tracking-tight">
+                NginxDoctor
+              </h1>
+              <p
+                class="text-[10px] uppercase tracking-widest text-accent font-bold"
+              >
+                Server Intelligence
+              </p>
+            </div>
+          </div>
 
-      <section>
-        <div class="section-title">📊 Overview</div>
-        <div class="grid">
-          <div class="card">
-            <div class="card-title">Operating System</div>
-            <div class="card-value">
-              {{ model.os.full_name if model.os else 'Unknown' }}
+          <nav class="space-y-2">
+            <a
+              href="#overview"
+              class="flex items-center gap-3 px-4 py-3 rounded-xl bg-accent text-white font-medium transition-all shadow-lg shadow-accent/20 group"
+            >
+              <i data-lucide="layout-dashboard" class="w-5 h-5"></i>
+              Dashboard
+            </a>
+            <a
+              href="#projects"
+              class="flex items-center gap-3 px-4 py-3 rounded-xl text-slate-400 hover:text-white hover:bg-white/5 transition-all group"
+            >
+              <i data-lucide="folders" class="w-5 h-5"></i>
+              Projects
+            </a>
+            <a
+              href="#findings"
+              class="flex items-center gap-3 px-4 py-3 rounded-xl text-slate-400 hover:text-white hover:bg-white/5 transition-all group"
+            >
+              <i data-lucide="activity" class="w-5 h-5"></i>
+              Findings
+            </a>
+            {% if ws_inventory %}
+            <a
+              href="#websocket"
+              class="flex items-center gap-3 px-4 py-3 rounded-xl text-slate-400 hover:text-white hover:bg-white/5 transition-all group"
+            >
+              <i data-lucide="zap" class="w-5 h-5"></i>
+              WebSockets
+            </a>
+            {% endif %}
+          </nav>
+        </div>
+
+        <div class="mt-auto p-8">
+          <div class="p-4 rounded-2xl glass border-white/5 bg-white/5">
+            <p class="text-xs text-slate-400 mb-2">Report Generated</p>
+            <p class="text-sm font-bold">{{ now }}</p>
+          </div>
+        </div>
+      </aside>
+
+      <!-- Main Content -->
+      <main
+        class="flex-1 overflow-y-auto scroll-smooth p-6 md:p-8 lg:p-12 scrollbar-hide"
+      >
+        <!-- Header Bar -->
+        <div
+          class="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-12"
+        >
+          <div>
+            <h2 class="heading-font text-4xl font-extrabold text-white mb-2">
+              Diagnostic Report
+            </h2>
+            <div class="flex items-center gap-4">
+              <span
+                class="flex items-center gap-1.5 px-3 py-1 rounded-full border border-white/10 bg-white/5 text-slate-300 text-sm font-medium"
+              >
+                <i data-lucide="server" class="w-4 h-4 text-accent"></i>
+                {{ model.hostname }}
+              </span>
+              <span
+                id="health-badge"
+                class="px-3 py-1 rounded-full text-sm font-bold"
+              ></span>
             </div>
           </div>
-          <div class="card">
-            <div class="card-title">Nginx Version</div>
-            <div class="card-value">
-              {{ model.nginx.version if model.nginx else 'Not Found' }}
-            </div>
-          </div>
-          <div class="card">
-            <div class="card-title">PHP Versions</div>
-            <div class="card-value">
-              {{ model.php.versions|join(', ') if model.php else 'Not Found' }}
-            </div>
-          </div>
-          <div class="card">
-            <div class="card-title">FPM Sockets</div>
-            <div class="card-value">
-              {{ model.php.sockets|length if model.php else 0 }}
+
+          <div class="flex items-center gap-3">
+            <button
+              onclick="window.print()"
+              class="px-5 py-2.5 rounded-xl border border-white/10 glass hover:bg-white/5 transition-all text-sm font-semibold flex items-center gap-2"
+            >
+              <i data-lucide="printer" class="w-4 h-4"></i>
+              Export PDF
+            </button>
+            <div class="w-[1px] h-8 bg-white/10 mx-2"></div>
+            <div class="flex -space-x-3">
+              <div
+                class="w-10 h-10 rounded-full border-2 border-background glass flex items-center justify-center overflow-hidden"
+                title="Nginx"
+              >
+                <img
+                  src="https://nginx.org/nginx.png"
+                  class="w-6 opacity-80"
+                  alt="Nginx"
+                />
+              </div>
+              <div
+                class="w-10 h-10 rounded-full border-2 border-background glass flex items-center justify-center overflow-hidden"
+                title="PHP"
+              >
+                <i data-lucide="code" class="w-5 text-accent"></i>
+              </div>
             </div>
           </div>
         </div>
-      </section>
 
-      <section>
-        <div class="section-title">🚀 Configured Projects</div>
-        <div class="card" style="padding: 0; overflow-x: auto">
-          <table class="project-table">
-            <thead>
-              <tr>
-                <th>Path</th>
-                <th>Type</th>
-                <th>Confidence</th>
-                <th>PHP Socket</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% if model.projects %}
-                {% for project in model.projects %}
-                <tr>
-                  <td style="font-family: monospace">{{ project.path }}</td>
-                  <td>
-                    <span class="severity-badge sev-info"
-                      >{{ project.type.value if project.type and project.type.value else project.type }}</span
-                    >
-                  </td>
-                  <td>
+        <!-- Stats Grid -->
+        <div
+          id="overview"
+          class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6 mb-12"
+        >
+          <!-- OS Info -->
+          <div
+            class="card glass p-6 rounded-[2rem] glass-hover transition-all relative overflow-hidden group"
+          >
+            <div
+              class="absolute -right-4 -top-4 w-24 h-24 bg-accent/10 rounded-full blur-3xl group-hover:bg-accent/20 transition-all"
+            ></div>
+            <div class="flex items-center gap-4 mb-4">
+              <div
+                class="w-12 h-12 rounded-2xl bg-slate-800/50 flex items-center justify-center"
+              >
+                <i data-lucide="monitor" class="w-6 h-6 text-slate-300"></i>
+              </div>
+              <span
+                class="text-xs font-bold uppercase tracking-widest text-slate-500"
+                >System</span
+              >
+            </div>
+            <h3 class="text-2xl font-bold text-white">
+              {{ model.os.full_name if model.os else 'Unknown' }}
+            </h3>
+            <p class="text-sm text-slate-400 mt-1">Operating System</p>
+          </div>
+
+          <!-- Nginx Info -->
+          <div
+            class="card glass p-6 rounded-[2rem] glass-hover transition-all relative overflow-hidden group"
+          >
+            <div
+              class="absolute -right-4 -top-4 w-24 h-24 bg-success/10 rounded-full blur-3xl group-hover:bg-success/20 transition-all"
+            ></div>
+            <div class="flex items-center gap-4 mb-4">
+              <div
+                class="w-12 h-12 rounded-2xl bg-slate-800/50 flex items-center justify-center"
+              >
+                <i data-lucide="globe" class="w-6 h-6 text-slate-300"></i>
+              </div>
+              <span
+                class="text-xs font-bold uppercase tracking-widest text-slate-500"
+                >Nginx</span
+              >
+            </div>
+            <h3 class="text-2xl font-bold text-white">
+              {{ model.nginx.version if model.nginx else 'Not Found' }}
+            </h3>
+            <div class="flex items-center gap-2 mt-1">
+               <span class="text-sm text-slate-400">Web Server</span>
+               <span class="px-1.5 py-0.5 rounded bg-accent/20 text-accent text-[9px] font-bold uppercase tracking-widest">
+                {{ model.nginx.mode }}
+               </span>
+               {% if model.nginx.container_id %}
+               <span class="text-[9px] font-mono text-slate-500">
+                ({{ model.nginx.container_id[:12] }})
+               </span>
+               {% endif %}
+            </div>
+          </div>
+
+          <!-- PHP Info -->
+          <div
+            class="card glass p-6 rounded-[2rem] glass-hover transition-all relative overflow-hidden group"
+          >
+            <div
+              class="absolute -right-4 -top-4 w-24 h-24 bg-accent/10 rounded-full blur-3xl group-hover:bg-accent/20 transition-all"
+            ></div>
+            <div class="flex items-center gap-4 mb-4">
+              <div
+                class="w-12 h-12 rounded-2xl bg-slate-800/50 flex items-center justify-center"
+              >
+                <i data-lucide="terminal" class="w-6 h-6 text-slate-300"></i>
+              </div>
+              <span
+                class="text-xs font-bold uppercase tracking-widest text-slate-500"
+                >PHP</span
+              >
+            </div>
+            <h3 class="text-2xl font-bold text-white">
+              {{ model.php.versions|join(', ') if model.php else 'Not found' }}
+            </h3>
+            <p class="text-sm text-slate-400 mt-1">Active Runtimes</p>
+          </div>
+
+          <!-- Findings Stats -->
+          <div
+            class="card glass p-6 rounded-[2rem] glass-hover transition-all relative overflow-hidden group"
+          >
+            <div
+              class="absolute -right-4 -top-4 w-24 h-24 bg-critical/10 rounded-full blur-3xl group-hover:bg-critical/20 transition-all"
+            ></div>
+            <div class="flex items-center gap-4 mb-4">
+              <div
+                class="w-12 h-12 rounded-2xl bg-slate-800/50 flex items-center justify-center"
+              >
+                <i
+                  data-lucide="alert-circle"
+                  class="w-6 h-6 text-slate-300"
+                ></i>
+              </div>
+              <span
+                class="text-xs font-bold uppercase tracking-widest text-slate-500"
+                >Summary</span
+              >
+            </div>
+            <div class="flex items-center gap-2">
+              <span class="text-2xl font-bold text-critical" id="crit-count"
+                >0</span
+              >
+              <span class="text-slate-500">/</span>
+              <span class="text-2xl font-bold text-warning" id="warn-count"
+                >0</span
+              >
+              <span class="text-slate-500">/</span>
+              <span class="text-2xl font-bold text-info" id="info-count"
+                >0</span
+              >
+            </div>
+            <p
+              class="text-[10px] text-slate-500 mt-1 uppercase tracking-tighter"
+            >
+              Crit / Warn / Info
+            </p>
+          </div>
+        </div>
+
+        <!-- Charts & Score Section -->
+        <div class="grid grid-cols-1 lg:grid-cols-3 gap-8 mb-12">
+          <!-- Health Score Chart -->
+          <div
+            class="lg:col-span-1 glass p-8 rounded-[2.5rem] flex flex-col items-center justify-center space-y-6"
+          >
+            <h4
+              class="heading-font text-xl font-bold text-white opacity-80 uppercase tracking-widest text-[11px]"
+            >
+              Server Health Index
+            </h4>
+            <div class="relative w-full aspect-square max-w-[200px]">
+              <canvas id="healthChart"></canvas>
+              <div
+                class="absolute inset-0 flex flex-col items-center justify-center pointer-events-none"
+              >
+                <span
+                  id="scoreValue"
+                  class="text-5xl font-black heading-font text-white"
+                  >0</span
+                >
+                <span
+                  class="text-[10px] text-slate-500 font-bold tracking-widest uppercase"
+                  >Score</span
+                >
+              </div>
+            </div>
+            <div
+              id="healthMessage"
+              class="px-6 py-2 rounded-2xl text-sm font-bold tracking-wide"
+            ></div>
+          </div>
+
+          <!-- Finding Categories -->
+          <div class="lg:col-span-2 glass p-8 rounded-[2.5rem]">
+            <div class="flex items-center justify-between mb-8">
+              <div>
+                <h4 class="heading-font text-xl font-bold text-white mb-1">
+                  Issue Distribution
+                </h4>
+                <p class="text-xs text-slate-400">
+                  Analysis of findings by severity level
+                </p>
+              </div>
+              <div class="flex gap-2">
+                <div class="flex items-center gap-2">
+                  <span class="w-2 h-2 rounded-full bg-critical"></span>
+                  <span
+                    class="text-[10px] text-slate-400 font-bold uppercase tracking-wider"
+                    >Critical</span
+                  >
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="w-2 h-2 rounded-full bg-warning"></span>
+                  <span
+                    class="text-[10px] text-slate-400 font-bold uppercase tracking-wider"
+                    >Warning</span
+                  >
+                </div>
+                <div class="flex items-center gap-2">
+                  <span class="w-2 h-2 rounded-full bg-info"></span>
+                  <span
+                    class="text-[10px] text-slate-400 font-bold uppercase tracking-wider"
+                    >Info</span
+                  >
+                </div>
+              </div>
+            </div>
+            <div class="h-64">
+              <canvas id="categoryChart"></canvas>
+            </div>
+          </div>
+        </div>
+
+        <!-- Runtime Topology Section -->
+        {% if model.runtime %}
+        <section id="runtime" class="mb-12 pt-8">
+          <div class="flex items-center justify-between mb-8">
+            <h3 class="heading-font text-3xl font-bold flex items-center gap-3">
+              <i data-lucide="activity" class="text-accent w-8 h-8"></i>
+              Runtime Topology
+            </h3>
+            <span
+              class="px-4 py-1 rounded-full border border-white/10 glass text-xs font-bold text-slate-400 uppercase tracking-widest"
+            >
+              Live State
+            </span>
+          </div>
+
+          <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+            <!-- Systemd Services -->
+            <div class="glass p-6 rounded-[2rem] border-white/5">
+              <div class="flex items-center gap-4 mb-6">
+                <div
+                  class="w-10 h-10 rounded-xl bg-blue-500/20 flex items-center justify-center"
+                >
+                  <i data-lucide="settings" class="w-5 h-5 text-blue-400"></i>
+                </div>
+                <div>
+                  <h4 class="font-bold text-lg">Systemd Services</h4>
+                  <p class="text-xs text-slate-400 uppercase tracking-wider">
+                    {{ model.runtime.systemd_services|length }} Monitored
+                  </p>
+                </div>
+              </div>
+              <div class="space-y-3 max-h-60 overflow-y-auto scrollbar-hide">
+                {% for svc in model.runtime.systemd_services %}
+                <div
+                  class="flex items-center justify-between p-3 rounded-xl bg-white/5 border border-white/5"
+                >
+                  <div>
+                    <p class="text-sm font-medium">{{ svc.name }}</p>
+                    <p class="text-[10px] text-slate-500">{{ svc.substate }}</p>
+                  </div>
+                  <div class="text-right">
                     <span
-                      class="{% if project.confidence >= 0.9 %}conf-high{% elif project.confidence >= 0.7 %}conf-med{% else %}conf-low{% endif %}"
+                      class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold uppercase tracking-wide {% if svc.state == 'active' %}bg-green-500/20 text-green-400{% else %}bg-red-500/20 text-red-400{% endif %}"
                     >
-                      {{ (project.confidence * 100)|round|int if project.confidence else 0 }}%
+                      {{ svc.state }}
                     </span>
+                    {% if svc.restart_count > 0 %}
+                    <p class="text-[10px] text-red-400 mt-1">
+                      {{ svc.restart_count }} restarts
+                    </p>
+                    {% endif %}
+                  </div>
+                </div>
+                {% endfor %}
+              </div>
+            </div>
+
+            <!-- Redis Instances -->
+            <div class="glass p-6 rounded-[2rem] border-white/5">
+              <div class="flex items-center gap-4 mb-6">
+                <div
+                  class="w-10 h-10 rounded-xl bg-red-500/20 flex items-center justify-center"
+                >
+                  <i data-lucide="database" class="w-5 h-5 text-red-400"></i>
+                </div>
+                <div>
+                  <h4 class="font-bold text-lg">Redis Instances</h4>
+                  <p class="text-xs text-slate-400 uppercase tracking-wider">
+                    {{ model.runtime.redis_instances|length }} Detected
+                  </p>
+                </div>
+              </div>
+              {% if model.runtime.redis_instances %}
+              <div class="space-y-3">
+                {% for redis in model.runtime.redis_instances %}
+                <div class="p-4 rounded-xl bg-white/5 border border-white/5">
+                  <div class="flex justify-between items-center mb-2">
+                    <span class="font-mono text-sm text-slate-300"
+                      >Port {{ redis.port }}</span
+                    >
+                    <span
+                      class="text-[10px] font-bold px-2 py-1 rounded bg-slate-800 text-slate-400"
+                    >
+                      {{ redis.state.value }}
+                    </span>
+                  </div>
+                  <div class="flex gap-2">
+                    <span
+                      class="text-[10px] px-2 py-1 rounded font-bold uppercase tracking-wider {% if redis.auth_enabled %}bg-green-500/20 text-green-400{% else %}bg-red-500/20 text-red-400{% endif %}"
+                    >
+                      Auth: {{ 'ON' if redis.auth_enabled else 'OFF' }}
+                    </span>
+                    <span
+                      class="text-[10px] px-2 py-1 rounded font-bold uppercase tracking-wider bg-slate-800 text-slate-400"
+                    >
+                      {{ redis.bind_addresses|join(', ') }}
+                    </span>
+                  </div>
+                </div>
+                {% endfor %}
+              </div>
+              {% else %}
+              <div class="text-center py-8 opacity-50">
+                <i data-lucide="database" class="w-8 h-8 mx-auto mb-2"></i>
+                <p class="text-sm">No Redis instances found</p>
+              </div>
+              {% endif %}
+            </div>
+
+            <!-- Background Workers -->
+            <div class="glass p-6 rounded-[2rem] border-white/5">
+              <div class="flex items-center gap-4 mb-6">
+                <div
+                  class="w-10 h-10 rounded-xl bg-purple-500/20 flex items-center justify-center"
+                >
+                  <i data-lucide="cpu" class="w-5 h-5 text-purple-400"></i>
+                </div>
+                <div>
+                  <h4 class="font-bold text-lg">Workers</h4>
+                  <p class="text-xs text-slate-400 uppercase tracking-wider">
+                    Scheduler:
+                    <span
+                      class="{{ 'text-green-400' if model.runtime.scheduler_detected else 'text-red-400' }}"
+                    >
+                      {{ model.runtime.scheduler_type or 'MISSING' }}
+                    </span>
+                  </p>
+                </div>
+              </div>
+              <div class="space-y-3 max-h-60 overflow-y-auto scrollbar-hide">
+                {% for worker in model.runtime.worker_processes %}
+                <div
+                  class="p-3 rounded-xl bg-white/5 border border-white/5 relative group"
+                >
+                  <div class="flex justify-between items-start mb-1">
+                    <span class="text-xs font-bold text-slate-300"
+                      >{{ worker.queue_type|upper }}</span
+                    >
+                    <span class="font-mono text-[10px] text-slate-500"
+                      >PID {{ worker.pid }}</span
+                    >
+                  </div>
+                  <p
+                    class="font-mono text-[10px] text-slate-400 truncate"
+                    title="{{ worker.cmdline }}"
+                  >
+                    {{ worker.cmdline }}
+                  </p>
+                  <div
+                    class="absolute inset-0 bg-white/5 opacity-0 group-hover:opacity-100 transition-opacity rounded-xl pointer-events-none"
+                  ></div>
+                </div>
+                {% endfor %} {% if not model.runtime.worker_processes %}
+                <div class="text-center py-8 opacity-50">
+                  <i data-lucide="coffee" class="w-8 h-8 mx-auto mb-2"></i>
+                  <p class="text-sm">No workers active</p>
+                </div>
+                {% endif %}
+              </div>
+            </div>
+          </div>
+        </section>
+        {% endif %}
+
+        <!-- Projects Section -->
+        <section id="projects" class="mb-12 pt-8">
+          <div class="flex items-center justify-between mb-8">
+            <h3 class="heading-font text-3xl font-bold flex items-center gap-3">
+              <i data-lucide="box" class="text-accent w-8 h-8"></i>
+              Active Server Environments
+            </h3>
+            <span
+              class="px-4 py-1 rounded-full border border-white/10 glass text-xs font-bold text-slate-400 uppercase tracking-widest"
+            >
+              {{ model.projects|length }} Sites Detected
+            </span>
+          </div>
+
+          <div
+            class="glass overflow-hidden rounded-[2rem] border-white/5 shadow-2xl"
+          >
+            <div class="overflow-x-auto">
+              <table class="w-full text-left border-collapse">
+                <thead>
+                  <tr class="bg-white/5">
+                    <th
+                      class="px-6 py-4 text-xs font-bold uppercase tracking-widest text-slate-500 border-b border-white/5"
+                    >
+                      Path & Identifiers
+                    </th>
+                    <th
+                      class="px-6 py-4 text-xs font-bold uppercase tracking-widest text-slate-500 border-b border-white/5"
+                    >
+                      Env Type
+                    </th>
+                    <th
+                      class="px-6 py-4 text-xs font-bold uppercase tracking-widest text-slate-500 border-b border-white/5"
+                    >
+                      Confidence
+                    </th>
+                    <th
+                      class="px-6 py-4 text-xs font-bold uppercase tracking-widest text-slate-500 border-b border-white/5"
+                    >
+                      PHP Socket Path
+                    </th>
+                  </tr>
+                </thead>
+                <tbody class="divide-y divide-white/5">
+                  {% if model.projects %} {% for project in model.projects %}
+                  <tr class="hover:bg-white/[0.02] transition-colors group">
+                    <td class="px-6 py-6 font-mono text-sm">
+                      <div class="flex items-center gap-3">
+                        <div
+                          class="w-8 h-8 rounded-lg bg-surface flex items-center justify-center"
+                        >
+                          <i
+                            data-lucide="link"
+                            class="w-4 h-4 text-slate-500 group-hover:text-accent transition-colors"
+                          ></i>
+                        </div>
+                        <span
+                          class="text-slate-200 group-hover:text-white transition-colors"
+                          >{{ project.path }}</span
+                        >
+                      </div>
+                    </td>
+                    <td class="px-6 py-6">
+                      <span
+                        class="inline-flex items-center gap-1.5 px-3 py-1 rounded-lg bg-info/10 text-info text-[10px] font-bold uppercase tracking-wider border border-info/20"
+                      >
+                        {{ project.type.value if project.type and
+                        project.type.value else project.type }}
+                      </span>
+                    </td>
+                    <td class="px-6 py-6">
+                      <div class="flex flex-col gap-1.5">
+                        <div
+                          class="flex items-center justify-between text-[10px] font-bold mb-1"
+                        >
+                          <span class="text-slate-500 tracking-wider"
+                            >RELIABILITY</span
+                          >
+                          <span
+                            class="{% if project.confidence >= 0.9 %}text-success{% elif project.confidence >= 0.7 %}text-warning{% else %}text-critical{% endif %}"
+                          >
+                            {{ (project.confidence * 100)|round|int if
+                            project.confidence else 0 }}%
+                          </span>
+                        </div>
+                        <div
+                          class="w-24 h-1.5 bg-slate-800 rounded-full overflow-hidden"
+                        >
+                          <div
+                            class="h-full progress-bar {% if project.confidence >= 0.9 %}bg-success{% elif project.confidence >= 0.7 %}bg-warning{% else %}bg-critical{% endif %}"
+                            data-width="{{ project.confidence or 0 }}"
+                          ></div>
+                        </div>
+                      </div>
+                    </td>
+                    <td class="px-6 py-6 font-mono text-[11px] text-slate-400">
+                      {{ project.php_socket or '<em class="text-slate-600"
+                        >No socket bound</em
+                      >'|safe }}
+                    </td>
+                  </tr>
+                  {% endfor %} {% else %}
+                  <tr>
+                    <td colspan="4" class="px-6 py-20 text-center">
+                      <div
+                        class="flex flex-col items-center justify-center opacity-40"
+                      >
+                        <i data-lucide="search-x" class="w-12 h-12 mb-4"></i>
+                        <p class="text-lg font-medium">
+                          No active projects found
+                        </p>
+                        <p class="text-sm">
+                          Scan Nginx configuration to discover hosts.
+                        </p>
+                      </div>
+                    </td>
+                  </tr>
+                  {% endif %}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </section>
+
+        <!-- Findings Section -->
+        <section id="findings" class="mb-12 pt-8">
+          <div
+            class="flex flex-col md:flex-row md:items-center justify-between gap-6 mb-8"
+          >
+            <div>
+              <h3
+                class="heading-font text-3xl font-bold flex items-center gap-3"
+              >
+                <i data-lucide="search" class="text-accent w-8 h-8"></i>
+                Diagnostic Findings
+              </h3>
+              <p class="text-slate-400 mt-1 text-sm">
+                Detailed root-cause analysis and actionable solutions.
+              </p>
+            </div>
+
+            <div
+              class="flex items-center gap-2 p-1.5 glass rounded-2xl overflow-hidden border-white/5"
+            >
+              <button
+                onclick="filterFindings('all')"
+                class="filter-btn active px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest transition-all bg-white/10 text-white"
+              >
+                All
+              </button>
+              <button
+                onclick="filterFindings('CRITICAL')"
+                class="filter-btn px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest text-slate-500 hover:text-white transition-all"
+              >
+                Critical
+              </button>
+              <button
+                onclick="filterFindings('WARNING')"
+                class="filter-btn px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest text-slate-500 hover:text-white transition-all"
+              >
+                Warning
+              </button>
+              <button
+                onclick="filterFindings('INFO')"
+                class="filter-btn px-4 py-2 rounded-xl text-xs font-bold uppercase tracking-widest text-slate-500 hover:text-white transition-all"
+              >
+                Info
+              </button>
+            </div>
+          </div>
+
+          {% if not findings %}
+          <div
+            class="glass p-16 rounded-[2.5rem] border-success/20 text-center relative overflow-hidden"
+          >
+            <div
+              class="absolute inset-0 bg-success/5 pointer-events-none"
+            ></div>
+            <div class="relative z-10">
+              <i
+                data-lucide="check-circle-2"
+                class="w-20 h-20 text-success mx-auto mb-6"
+              ></i>
+              <h4 class="heading-font text-4xl font-bold text-white mb-2">
+                System Healthy
+              </h4>
+              <p class="text-slate-400 text-lg">
+                No critical misconfigurations or security risks detected.
+              </p>
+            </div>
+          </div>
+          {% else %}
+          <div class="space-y-6">
+            {% for finding in findings %}
+            <div
+              class="finding-card glass rounded-[2.5rem] overflow-hidden border-white/5 hover:border-white/10 transition-all flex flex-col md:flex-row"
+              data-severity="{{ finding.severity.value }}"
+            >
+              <!-- Sidebar status -->
+              <div
+                class="w-full md:w-3 bg-{{ finding.severity.value|lower }}"
+              ></div>
+
+              <div class="flex-1 p-8 md:p-10">
+                <div
+                  class="flex flex-wrap items-center justify-between gap-4 mb-6"
+                >
+                  <div class="flex items-center gap-3">
+                    <span
+                      class="inline-flex px-4 py-1.5 rounded-xl text-[10px] font-black uppercase tracking-widest bg-{{ finding.severity.value|lower }}/20 text-{{ finding.severity.value|lower }} border border-{{ finding.severity.value|lower }}/30"
+                    >
+                      {{ finding.severity.value }}
+                    </span>
+                    <span class="text-slate-500 font-mono text-xs"
+                      >{{ finding.id }}</span
+                    >
+                    {% if finding.derived_from %}
+                    <span
+                      class="flex items-center gap-1.5 text-[10px] font-bold text-slate-500 bg-white/5 px-2.5 py-1 rounded-lg border border-white/5"
+                    >
+                      <i
+                        data-lucide="git-branch"
+                        class="w-3 h-3 text-slate-600"
+                      ></i>
+                      CHAINED TO {{ finding.derived_from }}
+                    </span>
+                    {% endif %}
+                  </div>
+                  <div class="flex items-center gap-2">
+                    <span
+                      class="text-[10px] font-bold text-slate-500 uppercase tracking-widest"
+                      >Confidence</span
+                    >
+                    <span
+                      class="text-sm font-black text-white px-2 py-0.5 rounded-lg border border-white/5 bg-white/5"
+                      >{{ (finding.confidence * 100)|int }}%</span
+                    >
+                  </div>
+                </div>
+
+                <h4 class="heading-font text-2xl font-bold text-white mb-3">
+                  {{ finding.condition }}
+                </h4>
+                <p class="text-slate-400 text-lg mb-8 leading-relaxed">
+                  {{ finding.cause }}
+                </p>
+
+                <!-- Evidence and Solution Grid -->
+                <div class="grid grid-cols-1 xl:grid-cols-2 gap-8">
+                  <!-- Evidence Column -->
+                  <div class="space-y-4">
+                    <div
+                      class="flex items-center gap-2 text-xs font-black text-slate-500 uppercase tracking-widest"
+                    >
+                      <i data-lucide="fingerprint" class="w-4 h-4"></i>
+                      Observation Evidence
+                    </div>
+                    <div class="space-y-3">
+                      {% for ev in finding.evidence %}
+                      <div
+                        class="p-4 rounded-2xl bg-black/30 border border-white/5"
+                      >
+                        <div class="flex items-center justify-between mb-2">
+                          <span
+                            class="font-mono text-[10px] text-accent font-bold"
+                            >{{ ev.source_file }}:{{ ev.line_number }}</span
+                          >
+                          <span
+                            class="text-[9px] px-1.5 py-0.5 rounded border border-white/10 bg-white/5 text-slate-500 uppercase tracking-widest"
+                            >{{ ev.command }}</span
+                          >
+                        </div>
+                        {% if ev.excerpt %}
+                        <pre
+                          class="text-[11px] font-mono text-slate-400 overflow-x-auto p-3 bg-black/20 rounded-xl mt-2 border-l-2 border-accent"
+                        ><code>{{ ev.excerpt }}</code></pre>
+                        {% endif %}
+                      </div>
+                      {% endfor %}
+                    </div>
+                  </div>
+
+                  <!-- Treatment Column -->
+                  <div class="space-y-4">
+                    <div
+                      class="flex items-center gap-2 text-xs font-black text-slate-500 uppercase tracking-widest"
+                    >
+                      <i
+                        data-lucide="shield-check"
+                        class="w-4 h-4 text-success"
+                      ></i>
+                      Healing Treatment
+                    </div>
+                    {% if finding.treatment %}
+                    <div
+                      class="p-6 rounded-[2rem] bg-success/5 border border-success/10 relative group"
+                    >
+                      <div
+                        class="absolute top-4 right-4 text-success/20 group-hover:text-success/40 transition-colors"
+                      >
+                        <i data-lucide="wrench" class="w-12 h-12"></i>
+                      </div>
+                      <p
+                        class="text-[10px] font-black text-success uppercase tracking-widest mb-3"
+                      >
+                        RECOMMENDED ACTION
+                      </p>
+                      <pre
+                        class="text-xs font-mono text-success-300 whitespace-pre-wrap break-words leading-relaxed"
+                      ><code>{{ finding.treatment }}</code></pre>
+                    </div>
+                    {% endif %} {% if finding.impact %}
+                    <div
+                      class="mt-6 p-6 rounded-[2rem] bg-critical/5 border border-critical/10"
+                    >
+                      <p
+                        class="text-[10px] font-black text-critical uppercase tracking-widest mb-3"
+                      >
+                        RISKS IF IGNORED
+                      </p>
+                      <ul class="space-y-2">
+                        {% for impact in finding.impact %}
+                        <li
+                          class="flex items-start gap-2.5 text-xs text-slate-400 leading-relaxed"
+                        >
+                          <div
+                            class="mt-1 w-1.5 h-1.5 rounded-full bg-critical border border-critical/30 shrink-0"
+                          ></div>
+                          {{ impact }}
+                        </li>
+                        {% endfor %}
+                      </ul>
+                    </div>
+                    {% endif %}
+                  </div>
+                </div>
+              </div>
+            </div>
+            {% endfor %}
+          </div>
+          {% endif %}
+        </section>
+
+        <!-- WebSocket Inventory (Optional) -->
+        {% if ws_inventory %}
+        <section id="websocket" class="mb-12 pt-8">
+          <div class="flex items-center justify-between mb-8">
+            <h3 class="heading-font text-3xl font-bold flex items-center gap-3">
+              <i data-lucide="zap" class="text-magenta w-8 h-8"></i>
+              WSS Proxy Inventory
+            </h3>
+          </div>
+          <div class="glass overflow-hidden rounded-[2rem] border-white/5">
+            <table class="w-full text-left">
+              <thead>
+                <tr class="bg-white/5">
+                  <th
+                    class="px-6 py-4 text-xs font-bold uppercase tracking-widest text-slate-500"
+                  >
+                    Service Domain
+                  </th>
+                  <th
+                    class="px-6 py-4 text-xs font-bold uppercase tracking-widest text-slate-500"
+                  >
+                    Path
+                  </th>
+                  <th
+                    class="px-6 py-4 text-xs font-bold uppercase tracking-widest text-slate-500"
+                  >
+                    Proxy Target
+                  </th>
+                  <th
+                    class="px-6 py-4 text-xs font-bold uppercase tracking-widest text-slate-500 text-center"
+                  >
+                    Upgrade
+                  </th>
+                  <th
+                    class="px-6 py-4 text-xs font-bold uppercase tracking-widest text-slate-500 text-center"
+                  >
+                    Risk
+                  </th>
+                </tr>
+              </thead>
+              <tbody class="divide-y divide-white/5">
+                {% for ws in ws_inventory %}
+                <tr class="hover:bg-white/[0.02]">
+                  <td class="px-6 py-6 font-bold text-white">
+                    {{ ws.domain }}
                   </td>
-                  <td style="font-family: monospace; font-size: 0.8rem">
-                    {{ project.php_socket or '-' }}
+                  <td class="px-6 py-6 font-mono text-[11px] text-accent">
+                    {{ ws.location.path }}
+                  </td>
+                  <td
+                    class="px-6 py-6 font-mono text-[11px] text-slate-400 truncate max-w-[200px]"
+                  >
+                    {{ ws.proxy_target }}
+                  </td>
+                  <td class="px-6 py-6 text-center">
+                    {% if ws.has_upgrade and ws.has_connection and
+                    ws.has_http_version_11 %}
+                    <i
+                      data-lucide="check-circle"
+                      class="w-5 h-5 text-success mx-auto"
+                    ></i>
+                    {% else %}
+                    <i
+                      data-lucide="x-circle"
+                      class="w-5 h-5 text-critical mx-auto"
+                    ></i>
+                    {% endif %}
+                  </td>
+                  <td class="px-6 py-6 text-center">
+                    <span
+                      class="inline-block w-20 px-2 py-1 rounded bg-slate-800 text-[9px] font-black tracking-widest border border-white/5 uppercase {% if ws.risk_level == 'OK' %}text-success{% elif ws.risk_level == 'WARNING' %}text-warning{% else %}text-critical{% endif %}"
+                    >
+                      {{ ws.risk_level }}
+                    </span>
                   </td>
                 </tr>
                 {% endfor %}
-              {% else %}
-                <tr><td colspan="4" style="text-align: center; color: var(--text-dim);">No active projects found in Nginx configuration.</td></tr>
-              {% endif %}
-            </tbody>
-          </table>
-        </div>
-      </section>
-
-      {% if unreferenced %}
-      <section style="margin-top: 3rem">
-        <div class="section-title">⚠️ Unreferenced Projects (Orphaned)</div>
-        <div class="card" style="padding: 0; overflow-x: auto; border-color: var(--warning)">
-          <table class="project-table">
-            <thead>
-              <tr>
-                <th>Path</th>
-                <th>Detected Type</th>
-                <th>Status</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for project in unreferenced %}
-              <tr>
-                <td style="font-family: monospace">{{ project.path }}</td>
-                <td>
-                  <span class="severity-badge sev-warning"
-                    >{{ project.type.value if project.type and project.type.value else project.type }}</span
-                  >
-                </td>
-                <td>On Disk Only</td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      </section>
-      {% endif %}
-
-      {% if static_noise %}
-      <section style="margin-top: 3rem">
-        <div class="section-title">📁 Static / Noise Folders</div>
-        <div class="card" style="padding: 1rem; border-color: var(--glass-border)">
-          <div style="display: flex; flex-wrap: wrap; gap: 0.5rem">
-            {% for path in static_noise %}
-            <span class="server-badge" style="margin: 0; font-size: 0.75rem"
-              >{{ path }}</span
-            >
-            {% endfor %}
+              </tbody>
+            </table>
           </div>
-        </div>
-      </section>
-      {% endif %}
+        </section>
+        {% endif %}
 
-      {% if ws_inventory %}
-      <section style="margin-top: 3rem">
-        <div class="section-title">🔌 WebSocket (WSS) Inventory</div>
-        <div class="card" style="padding: 0; overflow-x: auto; border-color: #a855f7">
-          <table class="project-table">
-            <thead>
-              <tr>
-                <th>Domain</th>
-                <th>Ports</th>
-                <th>WS Path</th>
-                <th>Proxy Target</th>
-                <th>Upgrade</th>
-                <th>Risk</th>
-              </tr>
-            </thead>
-            <tbody>
-              {% for ws in ws_inventory %}
-              <tr>
-                <td style="font-family: monospace">{{ ws.domain }}</td>
-                <td>{{ ws.ports | join(', ') }}</td>
-                <td style="font-family: monospace">{{ ws.location.path }}</td>
-                <td style="font-family: monospace; max-width: 200px; overflow: hidden; text-overflow: ellipsis">{{ ws.proxy_target }}</td>
-                <td style="text-align: center">
-                  {% if ws.has_upgrade and ws.has_connection and ws.has_http_version_11 %}
-                    <span style="color: var(--success)">✓</span>
-                  {% else %}
-                    <span style="color: var(--critical)">✗</span>
-                  {% endif %}
-                </td>
-                <td>
-                  {% if ws.risk_level == 'OK' %}
-                    <span class="severity-badge" style="background: rgba(16, 185, 129, 0.2); color: #6ee7b7; border: 1px solid rgba(16, 185, 129, 0.3);">OK</span>
-                  {% elif ws.risk_level == 'WARNING' %}
-                    <span class="severity-badge sev-warning">WARN</span>
-                  {% else %}
-                    <span class="severity-badge sev-critical">CRIT</span>
-                  {% endif %}
-                </td>
-              </tr>
-              {% endfor %}
-            </tbody>
-          </table>
-        </div>
-      </section>
-      {% endif %}
-
-      <div style="margin-top: 4rem"></div>
-
-      <section>
-        <div class="section-title">🩺 Findings ({{ findings|length }})</div>
-
-        {% if not findings %}
-        <div
-          class="card"
-          style="text-align: center; border-color: var(--success)"
+        <footer
+          class="mt-20 py-8 border-t border-white/10 text-center text-slate-500 text-[10px] font-bold uppercase tracking-widest"
         >
-          <div class="card-value" style="color: var(--success)">
-            ✅ No Issues Detected
-          </div>
-          <p style="color: var(--text-dim)">
-            Your Nginx configuration looks healthy!
-          </p>
-        </div>
-        {% else %} {% for finding in findings %}
-        <div class="finding">
-          <div class="finding-header">
-            <span class="severity-badge sev-{{ finding.severity.value|lower }}">
-              {{ finding.severity.value }}
-            </span>
-            <span class="finding-id">{{ finding.id }}</span>
-          </div>
-          <div class="finding-body">
-            <div class="finding-condition">{{ finding.condition }}</div>
-            <div class="finding-cause">
-              {{ finding.cause }} {% if finding.derived_from %}
-              <span style="font-style: italic; font-size: 0.8rem"
-                >(derived from {{ finding.derived_from }})</span
-              >
-              {% endif %}
-            </div>
-
-            {% if finding.evidence %}
-            <div
-              style="
-                font-size: 0.875rem;
-                margin-bottom: 0.5rem;
-                color: var(--text-dim);
-              "
-            >
-              Evidence:
-            </div>
-            <ul class="evidence-list">
-              {% for ev in finding.evidence %}
-              <li class="evidence-item">
-                <span class="evidence-loc"
-                  >{{ ev.source_file }}:{{ ev.line_number }}</span
-                >
-                {% if ev.excerpt %}
-                <span class="evidence-excerpt">{{ ev.excerpt }}</span>
-                {% endif %}
-              </li>
-              {% endfor %}
-            </ul>
-            {% endif %} {% if finding.treatment %}
-            <div class="treatment-panel">
-              <span class="treatment-type">
-                {% if "sudo" in finding.treatment|string %}Terminal Action{%
-                else %}Configuration Change{% endif %}
-              </span>
-              <code class="treatment-cmd">{{ finding.treatment }}</code>
-            </div>
-            {% endif %} {% if finding.impact %}
-            <div
-              style="
-                font-size: 0.875rem;
-                margin-top: 1.5rem;
-                color: var(--text-dim);
-              "
-            >
-              Impact if ignored:
-            </div>
-            <ul class="impact-list">
-              {% for impact in finding.impact %}
-              <li>{{ impact }}</li>
-              {% endfor %}
-            </ul>
-            {% endif %}
-          </div>
-        </div>
-        {% endfor %} {% endif %}
-      </section>
-
-      <footer>Generated by Nginx Doctor &bull; {{ now }}</footer>
+          Generated by
+          <span class="text-accent underline">Nginx Doctor</span> Engine v1.7.0
+          &bull; Secure Audit Verified &bull; &copy; 2026
+        </footer>
+      </main>
     </div>
+
+    <!-- Data Layer -->
+    <script id="findings-json" type="application/json">
+      [
+          {% for f in findings %}
+          { "id": "{{ f.id }}", "severity": "{{ f.severity.value }}" }{% if not loop.last %},{% endif %}
+          {% endfor %}
+      ]
+    </script>
+
+    <!-- Script Injection -->
+    <script>
+      // Init Lucide
+      lucide.createIcons();
+
+      // Data processing for JS
+      const findingsData = JSON.parse(
+        document.getElementById("findings-json").textContent,
+      );
+
+      // Apply dynamic widths to progress bars (Fixes CSS lint errors)
+      document.querySelectorAll(".progress-bar").forEach((bar) => {
+        const width = parseFloat(bar.getAttribute("data-width")) * 100;
+        bar.style.width = width + "%";
+      });
+
+      const sevCounts = {
+        CRITICAL: findingsData.filter((f) => f.severity === "CRITICAL").length,
+        WARNING: findingsData.filter((f) => f.severity === "WARNING").length,
+        INFO: findingsData.filter((f) => f.severity === "INFO").length,
+      };
+
+      // Update stats
+      document.getElementById("crit-count").innerText = sevCounts.CRITICAL;
+      document.getElementById("warn-count").innerText = sevCounts.WARNING;
+      document.getElementById("info-count").innerText = sevCounts.INFO;
+
+      // Health Scoring Logic
+      const maxScore = 100;
+      const penaltyCrit = 15;
+      const penaltyWarn = 5;
+      const finalScore = Math.max(
+        0,
+        maxScore -
+          sevCounts.CRITICAL * penaltyCrit -
+          sevCounts.WARNING * penaltyWarn,
+      );
+
+      document.getElementById("scoreValue").innerText = finalScore;
+
+      let scoreColor = "#10b981"; // Success
+      let scoreMsg = "Excellent";
+      if (finalScore < 60) {
+        scoreColor = "#ef4444"; // Critical
+        scoreMsg = "Poor Health";
+      } else if (finalScore < 85) {
+        scoreColor = "#f59e0b"; // Warning
+        scoreMsg = "Maintenance Needed";
+      }
+
+      const badge = document.getElementById("health-badge");
+      badge.innerText = scoreMsg.toUpperCase();
+      badge.style.backgroundColor = scoreColor + "20";
+      badge.style.color = scoreColor;
+      badge.style.border = "1px solid " + scoreColor + "40";
+
+      const healthMsg = document.getElementById("healthMessage");
+      healthMsg.innerText = scoreMsg;
+      healthMsg.style.backgroundColor = scoreColor + "20";
+      healthMsg.style.color = scoreColor;
+
+      // Health Chart
+      new Chart(document.getElementById("healthChart"), {
+        type: "doughnut",
+        data: {
+          datasets: [
+            {
+              data: [finalScore, 100 - finalScore],
+              backgroundColor: [scoreColor, "rgba(255,255,255,0.05)"],
+              borderWidth: 0,
+              circumference: 270,
+              rotation: 225,
+              cutout: "85%",
+              borderRadius: 20,
+            },
+          ],
+        },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false }, tooltip: { enabled: false } },
+        },
+      });
+
+      // Category Chart
+      new Chart(document.getElementById("categoryChart"), {
+        type: "bar",
+        data: {
+          labels: ["CRITICAL", "WARNING", "INFO"],
+          datasets: [
+            {
+              label: "Findings",
+              data: [sevCounts.CRITICAL, sevCounts.WARNING, sevCounts.INFO],
+              backgroundColor: ["#ef4444", "#f59e0b", "#3b82f6"],
+              borderRadius: 12,
+              maxBarThickness: 40,
+            },
+          ],
+        },
+        options: {
+          indexAxis: "y",
+          responsive: true,
+          maintainAspectRatio: false,
+          plugins: { legend: { display: false } },
+          scales: {
+            x: {
+              grid: { display: false },
+              ticks: { color: "#64748b", font: { weight: "bold", size: 10 } },
+              border: { display: false },
+            },
+            y: {
+              grid: { display: false },
+              ticks: { color: "#f8fafc", font: { weight: "bold", size: 11 } },
+              border: { display: false },
+            },
+          },
+        },
+      });
+
+      // Filter Logic
+      function filterFindings(severity) {
+        const cards = document.querySelectorAll(".finding-card");
+        const btns = document.querySelectorAll(".filter-btn");
+
+        // UI state
+        btns.forEach((b) => {
+          b.classList.remove("bg-white/10", "text-white");
+          b.classList.add("text-slate-500");
+        });
+        event.target.classList.add("bg-white/10", "text-white");
+        event.target.classList.remove("text-slate-500");
+
+        cards.forEach((card) => {
+          if (
+            severity === "all" ||
+            card.getAttribute("data-severity") === severity
+          ) {
+            card.style.display = "flex";
+          } else {
+            card.style.display = "none";
+          }
+        });
+      }
+    </script>
   </body>
 </html>

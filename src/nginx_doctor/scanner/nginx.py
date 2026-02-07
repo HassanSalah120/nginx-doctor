@@ -36,57 +36,6 @@ class NginxScanner:
     def __init__(self, ssh: SSHConnector) -> None:
         self.ssh = ssh
 
-    def scan(self) -> NginxScanResult:
-        """Perform full nginx scan.
-
-        Returns:
-            NginxScanResult with all collected data.
-        """
-        result = NginxScanResult()
-
-        # Check if nginx is installed
-        version_result = self.ssh.run("nginx -v")
-        if not version_result.success and not version_result.stderr:
-            return result
-
-        result.installed = True
-
-        # Version is printed to stderr
-        version_output = version_result.stderr or version_result.stdout
-        if "nginx/" in version_output:
-            result.version = version_output.split("nginx/")[1].split()[0].strip()
-
-        # Get config path
-        config_result = self.ssh.run("nginx -t")
-        result.test_result = config_result.stderr or config_result.stdout
-        result.test_passed = config_result.exit_code == 0
-
-        # Extract config path from test output
-        if "configuration file" in result.test_result:
-            for line in result.test_result.split("\n"):
-                if "configuration file" in line:
-                    # nginx: the configuration file /etc/nginx/nginx.conf syntax is ok
-                    parts = line.split("configuration file")
-                    if len(parts) > 1:
-                        path = parts[1].strip().split()[0]
-                        result.config_path = path
-                        break
-
-        # Get full configuration dump
-        # This is the most important output - contains all includes resolved
-        full_config_result = self.ssh.run("nginx -T")
-        if full_config_result.success:
-            result.full_config = full_config_result.stdout
-        else:
-            # nginx -T also outputs to stderr on some systems
-            result.full_config = full_config_result.stderr or ""
-
-        # List sites-enabled and sites-available
-        result.sites_enabled = self.list_sites("/etc/nginx/sites-enabled")
-        result.sites_available = self.list_sites("/etc/nginx/sites-available")
-
-        return result
-
     def list_sites(self, path: str = "/etc/nginx/sites-enabled") -> list[str]:
         """List files in a sites directory."""
         if not self.ssh.dir_exists(path):
@@ -155,6 +104,10 @@ class NginxScanner:
             "/storage",
             "/bootstrap/cache",
             "/bootstrap",
+            "/logs",
+            "/nginx",
+            "/conf.d",
+            "/ssl",
         ]
         
         # Iteratively strip suffixes to handle nested cases
