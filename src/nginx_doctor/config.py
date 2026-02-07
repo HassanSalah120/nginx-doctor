@@ -1,16 +1,12 @@
 """Configuration management for nginx-doctor server profiles."""
 
-import os
-from pathlib import Path
-from typing import Any
-
-import yaml
+import keyring
 
 from nginx_doctor.connector.ssh import SSHConfig
 
 
 class ConfigManager:
-    """Manages server profiles stored in YAML format."""
+    """Manages server profiles stored in YAML format with secure keyring for passwords."""
 
     def __init__(self, config_dir: Path | None = None) -> None:
         if config_dir is None:
@@ -25,6 +21,7 @@ class ConfigManager:
         self.config_dir = config_dir
         self.profiles_file = config_dir / "profiles.yaml"
         self._ensure_config_dir()
+        self.service_id = "nginx-doctor"
 
     def _ensure_config_dir(self) -> None:
         """Create config directory if it doesn't exist."""
@@ -44,20 +41,32 @@ class ConfigManager:
             return {}
 
     def _save_profiles(self, profiles: dict[str, Any]) -> None:
-        """Save profiles to the YAML file."""
+        """Save profiles to the YAML file with proper permissions."""
+        self.profiles_file.touch(mode=0o600)
         with open(self.profiles_file, "w") as f:
             yaml.safe_dump(profiles, f)
 
     def add_profile(self, name: str, config: SSHConfig) -> None:
         """Add or update a server profile."""
         profiles = self._load_profiles()
+        
+        # Handle password via keyring
+        password_ref = None
+        if config.password:
+            try:
+                keyring.set_password(self.service_id, name, config.password)
+                password_ref = "__keyring__"
+            except Exception:
+                # Fallback to plain text if keyring fails (e.g. headless without backend)
+                password_ref = config.password
+
         profiles[name] = {
             "host": config.host,
             "user": config.user,
             "port": config.port,
             "key_path": config.key_path,
             "use_sudo": config.use_sudo,
-            "password": config.password,  # Storing password in plain text for simplicity in this tool
+            "password": password_ref,
         }
         self._save_profiles(profiles)
 
@@ -66,8 +75,15 @@ class ConfigManager:
         profiles = self._load_profiles()
         data = profiles.get(name)
         if not data:
-            # Try if name is actually a hostname/IP
             return None
+        
+        # Resolve password from keyring if needed
+        password = data.get("password")
+        if password == "__keyring__":
+            try:
+                password = keyring.get_password(self.service_id, name)
+            except Exception:
+                password = None
         
         return SSHConfig(
             host=data["host"],
@@ -75,7 +91,7 @@ class ConfigManager:
             port=data.get("port", 22),
             key_path=data.get("key_path"),
             use_sudo=data.get("use_sudo", True),
-            password=data.get("password"),
+            password=password,
         )
 
     def list_profiles(self) -> dict[str, Any]:
@@ -86,6 +102,13 @@ class ConfigManager:
         """Remove a server profile."""
         profiles = self._load_profiles()
         if name in profiles:
+            # Clean up keyring
+            if profiles[name].get("password") == "__keyring__":
+                try:
+                    keyring.delete_password(self.service_id, name)
+                except Exception:
+                    pass
+            
             del profiles[name]
             self._save_profiles(profiles)
             return True
