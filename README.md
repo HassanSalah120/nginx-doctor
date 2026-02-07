@@ -86,6 +86,15 @@ python -m nginx_doctor diagnose prod-server --format plain
 - **Evidence-Based**: We don't just say "it's broken". We show you the exact file, line number, and config excerpt.
 - **Compliance Aware**: Exit codes (`0`=Clean, `1`=Warning, `2`=Critical) allow easy integration into pipelines.
 
+## 🤝 Community & Contributing
+
+We welcome contributions of all kinds!
+
+- **🐛 Report a Bug**: [Open an issue](https://github.com/HassanSalah120/nginx-doctor/issues/new?template=bug_report.md)
+- **💡 Suggest a Feature**: [Request a feature](https://github.com/HassanSalah120/nginx-doctor/issues/new?template=feature_request.md)
+- **📜 Guidelines**: Read our [Contributing Guide](CONTRIBUTING.md) and [Code of Conduct](CODE_OF_CONDUCT.md).
+- **🔒 Security**: Report vulnerabilities via our [Security Policy](SECURITY.md).
+
 ## 📜 License
 
-MIT
+Distributed under the [MIT License](LICENSE).
