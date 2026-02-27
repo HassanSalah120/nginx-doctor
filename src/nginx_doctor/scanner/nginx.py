@@ -36,6 +36,30 @@ class NginxScanner:
     def __init__(self, ssh: SSHConnector) -> None:
         self.ssh = ssh
 
+    def scan(self) -> "NginxInfo":
+        """Collect and parse full Nginx configuration.
+        
+        Returns:
+            NginxInfo object containing structured configuration.
+        """
+        from nginx_doctor.parser.nginx_conf import NginxConfigParser
+        
+        # Get Nginx version
+        version_result = self.ssh.run("nginx -v 2>&1")
+        version = "unknown"
+        if version_result.success or "nginx version" in version_result.stderr:
+            out = version_result.stderr or version_result.stdout
+            if "nginx/" in out:
+                version = out.split("nginx/")[1].split()[0].strip()
+        
+        # Get full configuration dump
+        config_result = self.ssh.run("nginx -T", use_sudo=True)
+        if not config_result.success:
+            raise RuntimeError(f"Failed to dump nginx config: {config_result.stderr}")
+        
+        parser = NginxConfigParser()
+        return parser.parse(config_result.stdout, version=version)
+
     def list_sites(self, path: str = "/etc/nginx/sites-enabled") -> list[str]:
         """List files in a sites directory."""
         if not self.ssh.dir_exists(path):

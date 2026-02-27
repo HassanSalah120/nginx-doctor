@@ -138,6 +138,11 @@ class AppDetector:
             if package_json:
                 deps = package_json.get("dependencies", {})
                 scripts = package_json.get("scripts", {})
+                dep_keys = set(deps.keys())
+                script_text = " ".join(str(v) for v in scripts.values()).lower()
+                has_ws_stack = any(k in dep_keys for k in {"ws", "socket.io", "uwebsockets.js"})
+                is_react = "react" in dep_keys
+                is_node_api = any(k in dep_keys for k in {"express", "fastify", "koa", "hono"})
                 
                 if "next" in deps:
                     project_type = ProjectType.NEXTJS
@@ -147,11 +152,19 @@ class AppDetector:
                     project_type = ProjectType.NUXT
                     confidence = 0.95
                     reasons.append("Nuxt.js dependency detected")
-                elif "react" in deps:
+                elif is_react and ("vite" in dep_keys or "react-scripts" in dep_keys or "webpack" in dep_keys):
+                    project_type = ProjectType.REACT_FRONTEND
+                    confidence = 0.90
+                    reasons.append("React frontend build stack detected")
+                elif is_react:
                     # If it has package.json and react but no index.html in root, likely source
                     project_type = ProjectType.REACT_SOURCE
                     reasons.append("React dependency in source form")
-                elif "express" in deps or "fastify" in deps or "koa" in deps:
+                elif has_ws_stack and ("ws" in script_text or "socket" in script_text):
+                    project_type = ProjectType.WEBSOCKET_SERVICE
+                    confidence = 0.88
+                    reasons.append("WebSocket service dependencies/scripts detected")
+                elif is_node_api:
                     project_type = ProjectType.NODE_API
                     reasons.append("Node.js API framework detected (Express/Fastify/Koa)")
                 else:
@@ -167,6 +180,17 @@ class AppDetector:
         # Check for Dockerized App (Mapping detection)
         if docker_containers:
             for container in docker_containers:
+                image_lower = (container.image or "").lower()
+                name_lower = (container.name or "").lower()
+                if any(k in image_lower or k in name_lower for k in ("nginx", "traefik", "caddy", "haproxy")):
+                    for mount in container.mounts:
+                        source = mount.get("source", "")
+                        if source and (source == scan.path or source.startswith(scan.path + "/")):
+                            return DetectionResult(
+                                project_type=ProjectType.REVERSE_PROXY,
+                                confidence=0.82,
+                                reasons=[f"Directory mapped into reverse proxy container '{container.name}'"],
+                            )
                 for mount in container.mounts:
                     source = mount.get("source", "")
                     if source and (source == scan.path or source.startswith(scan.path + "/")):

@@ -19,6 +19,9 @@ class ProjectType(Enum):
     NEXTJS = "nextjs"
     NUXT = "nuxt"
     DOCKERIZED_APP = "dockerized_app"
+    REVERSE_PROXY = "reverse_proxy"
+    REACT_FRONTEND = "react_frontend"
+    WEBSOCKET_SERVICE = "websocket_service"
     UNKNOWN = "unknown"
 
 
@@ -90,6 +93,8 @@ class LocationBlock:
     proxy_buffering: str | None = None  # "on" or "off"
     proxy_read_timeout: int | None = None  # seconds
     proxy_send_timeout: int | None = None  # seconds
+    return_directive: str | None = None
+    stub_status: bool = False
     
     # Nested locations
     locations: list["LocationBlock"] = field(default_factory=list)
@@ -277,11 +282,16 @@ class ServicesModel:
     docker_containers: list[DockerContainer] = field(default_factory=list)
     
     mysql: ServiceStatus = field(default_factory=lambda: ServiceStatus(capability=CapabilityLevel.NONE))
+    mysql_config_detected: bool = False
+    mysql_bind_addresses: list[str] = field(default_factory=list)
     
     node: ServiceStatus = field(default_factory=lambda: ServiceStatus(capability=CapabilityLevel.NONE))
     node_processes: list[NodeProcess] = field(default_factory=list)
 
     firewall: str = "unknown"  # present, not_detected, unknown
+    firewall_ufw_enabled: bool | None = None
+    firewall_ufw_default_incoming: str | None = None  # allow, deny, unknown
+    firewall_rules: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -354,6 +364,133 @@ class RuntimeModel:
 
 
 @dataclass
+class DiskUsage:
+    """Disk utilization for a mountpoint."""
+
+    mount: str
+    total_gb: float
+    used_gb: float
+    used_percent: float
+    inode_total: int | None = None
+    inode_used_percent: float | None = None
+
+
+@dataclass
+class SecurityBaselineModel:
+    """Baseline OS/security posture snapshot."""
+
+    ssh_permit_root_login: str | None = None
+    ssh_password_authentication: str | None = None
+    pending_updates_total: int | None = None
+    pending_security_updates: int | None = None
+    reboot_required: bool = False
+
+
+@dataclass
+class VulnerabilityModel:
+    """Package vulnerability posture from distro security metadata."""
+
+    provider: str = "unknown"  # apt, dnf, yum, unknown
+    cve_ids: list[str] = field(default_factory=list)
+    advisory_ids: list[str] = field(default_factory=list)
+    affected_packages: list[str] = field(default_factory=list)
+
+
+@dataclass
+class CertbotModel:
+    """Certbot usage and certificate-renewal posture."""
+
+    installed: bool | None = None
+    service_failed: bool = False
+    timer_active: bool = False
+    timer_enabled: bool = False
+    uses_letsencrypt_certs: bool = False
+    https_detected: bool = False
+    min_days_to_expiry: int | None = None
+    active_cert_paths: list[str] = field(default_factory=list)
+    renew_dry_run_output: str | None = None
+    systemctl_status_output: str | None = None
+    journal_output: str | None = None
+    unit_cat_output: str | None = None
+    certificates_output: str | None = None
+    renewal_dir_listing: str | None = None
+
+
+@dataclass
+class NetworkEndpoint:
+    """Live listening endpoint on the host."""
+
+    protocol: str  # tcp or udp
+    address: str
+    port: int
+    pid: int | None = None
+    program: str | None = None
+    service: str | None = None
+    public_exposed: bool = False
+
+
+@dataclass
+class NetworkSurfaceModel:
+    """Host network exposure snapshot."""
+
+    endpoints: list[NetworkEndpoint] = field(default_factory=list)
+
+
+@dataclass
+class TLSCertificateStatus:
+    """TLS certificate metadata extracted from active cert paths."""
+
+    path: str
+    issuer: str | None = None
+    subject: str | None = None
+    expires_at: str | None = None
+    days_remaining: int | None = None
+    sans: list[str] = field(default_factory=list)
+    parse_ok: bool = False
+
+
+@dataclass
+class TLSStatusModel:
+    """TLS certificate posture snapshot."""
+
+    certificates: list[TLSCertificateStatus] = field(default_factory=list)
+
+
+@dataclass
+class UpstreamProbeResult:
+    """Optional active probe result for upstream/local backend targets."""
+
+    target: str
+    protocol: str = "tcp"  # tcp/http/https
+    reachable: bool = False
+    latency_ms: float | None = None
+    detail: str | None = None
+    scope: str = "host"  # host, nginx_container, unknown
+    status: str = "UNKNOWN"  # OPEN, BLOCKED, UNKNOWN
+    tcp_ok: bool | None = None
+    http_code: int | None = None
+    ws_code: int | None = None
+    ws_status: str | None = None  # 101, 426, timeout, fail, n/a
+    ws_detail: str | None = None
+    ws_path: str | None = None
+
+
+@dataclass
+class TelemetryModel:
+    """Host-level telemetry snapshot."""
+
+    cpu_cores: int | None = None
+    load_1: float | None = None
+    load_5: float | None = None
+    load_15: float | None = None
+    mem_total_mb: int | None = None
+    mem_available_mb: int | None = None
+    swap_total_mb: int | None = None
+    swap_free_mb: int | None = None
+    disks: list[DiskUsage] = field(default_factory=list)
+
+
+@dataclass
 class ServerModel:
     """Complete server model - the unified view of the server state.
 
@@ -374,6 +511,13 @@ class ServerModel:
     services: ServicesModel = field(default_factory=ServicesModel)
     projects: list[ProjectInfo] = field(default_factory=list)
     runtime: RuntimeModel = field(default_factory=RuntimeModel)
+    telemetry: TelemetryModel = field(default_factory=TelemetryModel)
+    security_baseline: SecurityBaselineModel = field(default_factory=SecurityBaselineModel)
+    vulnerability: VulnerabilityModel = field(default_factory=VulnerabilityModel)
+    certbot: CertbotModel = field(default_factory=CertbotModel)
+    tls: TLSStatusModel = field(default_factory=TLSStatusModel)
+    network_surface: NetworkSurfaceModel = field(default_factory=NetworkSurfaceModel)
+    upstream_probes: list[UpstreamProbeResult] = field(default_factory=list)
     scan_timestamp: str = ""  # ISO format timestamp
     doctor_version: str = ""
     commit_hash: str = ""

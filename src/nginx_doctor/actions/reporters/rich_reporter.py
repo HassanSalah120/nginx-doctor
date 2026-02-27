@@ -152,6 +152,39 @@ class RichReporter(BaseReporter):
         if model.php:
             self.console.print(f"   PHP: {', '.join(model.php.versions)}")
             self.console.print(f"   FPM Sockets: {len(model.php.sockets)}")
+        if model.services:
+            self.console.print(
+                f"   Services: MySQL={model.services.mysql.state.value}, "
+                f"Firewall={model.services.firewall}"
+            )
+        if model.vulnerability:
+            v = model.vulnerability
+            if v.provider != "unknown" or v.cve_ids or v.advisory_ids:
+                self.console.print(
+                    f"   Vulnerabilities: provider={v.provider}, "
+                    f"cves={len(v.cve_ids)}, advisories={len(v.advisory_ids)}, packages={len(v.affected_packages)}"
+                )
+        if model.network_surface and model.network_surface.endpoints:
+            public_eps = [ep for ep in model.network_surface.endpoints if ep.public_exposed]
+            self.console.print(
+                f"   Network Surface: endpoints={len(model.network_surface.endpoints)}, public={len(public_eps)}"
+            )
+        if model.security_baseline:
+            b = model.security_baseline
+            if b.ssh_permit_root_login is not None or b.ssh_password_authentication is not None:
+                self.console.print(
+                    f"   SSH: PermitRootLogin={b.ssh_permit_root_login or 'unknown'}, "
+                    f"PasswordAuthentication={b.ssh_password_authentication or 'unknown'}"
+                )
+            if b.pending_updates_total is not None:
+                sec_str = (
+                    f", security={b.pending_security_updates}"
+                    if b.pending_security_updates is not None
+                    else ""
+                )
+                self.console.print(f"   Updates: total={b.pending_updates_total}{sec_str}")
+            if b.reboot_required:
+                self.console.print("   [yellow]! Reboot required[/]")
 
         health_issues = 0
         if findings:
@@ -198,8 +231,63 @@ class RichReporter(BaseReporter):
                 table.add_row(display_name, f"[{conf_style}]{p.type.value}[/]", f"[{conf_style}]{p.confidence:.0%}[/]", socket_display)
 
             self.console.print(table)
-            
+
+        self._report_telemetry(model)
         self._report_runtime_topology(model)
+        self._report_upstream_probes(model)
+
+    def _report_telemetry(self, model: ServerModel) -> None:
+        """Report host telemetry snapshot."""
+        t = model.telemetry
+        if not t:
+            return
+
+        has_any_metric = (
+            t.load_1 is not None
+            or (t.mem_total_mb is not None and t.mem_available_mb is not None)
+            or bool(t.disks)
+        )
+        if not has_any_metric:
+            return
+
+        table = Table(title="Host Telemetry", show_header=True, header_style="bold cyan")
+        table.add_column("Metric")
+        table.add_column("Value")
+
+        if t.load_1 is not None:
+            cores = t.cpu_cores if t.cpu_cores is not None else "?"
+            table.add_row("Load (1/5/15)", f"{t.load_1:.2f} / {t.load_5:.2f} / {t.load_15:.2f} (cores={cores})")
+
+        if t.mem_total_mb is not None and t.mem_available_mb is not None and t.mem_total_mb > 0:
+            avail_pct = (t.mem_available_mb / t.mem_total_mb) * 100.0
+            mem_color = "green" if avail_pct >= 20 else ("yellow" if avail_pct >= 10 else "red")
+            table.add_row(
+                "Memory Available",
+                f"[{mem_color}]{t.mem_available_mb}MB / {t.mem_total_mb}MB ({avail_pct:.1f}%)[/]",
+            )
+
+        if t.swap_total_mb is not None and t.swap_free_mb is not None and t.swap_total_mb > 0:
+            swap_used = t.swap_total_mb - t.swap_free_mb
+            swap_used_pct = (swap_used / t.swap_total_mb) * 100.0
+            swap_color = "green" if swap_used_pct < 80 else ("yellow" if swap_used_pct < 95 else "red")
+            table.add_row(
+                "Swap Used",
+                f"[{swap_color}]{swap_used}MB / {t.swap_total_mb}MB ({swap_used_pct:.1f}%)[/]",
+            )
+
+        for disk in t.disks[:3]:
+            disk_color = "green" if disk.used_percent < 85 else ("yellow" if disk.used_percent < 95 else "red")
+            inode_suffix = ""
+            if disk.inode_used_percent is not None:
+                inode_color = "green" if disk.inode_used_percent < 85 else ("yellow" if disk.inode_used_percent < 95 else "red")
+                inode_suffix = f", inode=[{inode_color}]{disk.inode_used_percent:.1f}%[/]"
+            table.add_row(
+                f"Disk {disk.mount}",
+                f"[{disk_color}]{disk.used_percent:.1f}% ({disk.used_gb:.2f}GB/{disk.total_gb:.2f}GB)[/]{inode_suffix}",
+            )
+
+        self.console.print(table)
+        self.console.print()
 
     def _report_runtime_topology(self, model: ServerModel) -> None:
         """Report runtime topology (Systemd, Redis, Workers)."""
@@ -316,3 +404,28 @@ class RichReporter(BaseReporter):
             )
         
         self.console.print(table)
+
+    def _report_upstream_probes(self, model: ServerModel) -> None:
+        probes = getattr(model, "upstream_probes", []) or []
+        if not probes:
+            return
+        table = Table(title="Active Upstream Probes", show_header=True, header_style="bold green")
+        table.add_column("Target")
+        table.add_column("Status")
+        table.add_column("TCP")
+        table.add_column("HTTP")
+        table.add_column("WS")
+        table.add_column("Detail")
+        for probe in probes:
+            status = getattr(probe, "status", "UNKNOWN")
+            ws = getattr(probe, "ws_status", None) or (str(getattr(probe, "ws_code", "")) if getattr(probe, "ws_code", None) is not None else "n/a")
+            table.add_row(
+                probe.target,
+                status,
+                "ok" if getattr(probe, "tcp_ok", None) else ("fail" if getattr(probe, "tcp_ok", None) is not None else "n/a"),
+                str(getattr(probe, "http_code", None) if getattr(probe, "http_code", None) is not None else "n/a"),
+                ws,
+                getattr(probe, "ws_detail", None) or (probe.detail or ""),
+            )
+        self.console.print(table)
+        self.console.print()

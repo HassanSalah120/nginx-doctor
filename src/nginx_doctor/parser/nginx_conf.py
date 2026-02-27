@@ -290,6 +290,10 @@ class NginxConfigParser:
                     location.proxy_send_timeout = int(timeout_str)
                 except ValueError:
                     pass
+            elif directive == "return":
+                location.return_directive = args.strip()
+            elif directive == "stub_status":
+                location.stub_status = args.strip().lower() == "on"
 
     def get_directive_at_line(
         self, nginx_t_output: str, line_number: int

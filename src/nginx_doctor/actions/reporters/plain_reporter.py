@@ -107,11 +107,57 @@ class PlainReporter(BaseReporter):
             self.console.print(f"Nginx: {model.nginx.version} (Source: {source_info})")
         if model.php:
             self.console.print(f"PHP: {', '.join(model.php.versions)}")
+        if model.telemetry:
+            t = model.telemetry
+            if t.load_1 is not None:
+                cores = t.cpu_cores if t.cpu_cores is not None else "?"
+                self.console.print(f"Load: {t.load_1:.2f} / {t.load_5:.2f} / {t.load_15:.2f} (cores: {cores})")
+            if t.mem_total_mb is not None and t.mem_available_mb is not None:
+                self.console.print(f"Memory: {t.mem_available_mb}MB available / {t.mem_total_mb}MB total")
+            if t.disks:
+                top_disk = t.disks[0]
+                inode_suffix = ""
+                if top_disk.inode_used_percent is not None:
+                    inode_suffix = f", inode {top_disk.inode_used_percent:.1f}%"
+                self.console.print(
+                    f"Disk: {top_disk.mount} {top_disk.used_percent:.1f}% ({top_disk.used_gb:.2f}GB/{top_disk.total_gb:.2f}GB{inode_suffix})"
+                )
+        if model.security_baseline:
+            b = model.security_baseline
+            if b.ssh_permit_root_login is not None or b.ssh_password_authentication is not None:
+                self.console.print(
+                    f"SSH: PermitRootLogin={b.ssh_permit_root_login or 'unknown'}, "
+                    f"PasswordAuthentication={b.ssh_password_authentication or 'unknown'}"
+                )
+            if b.pending_updates_total is not None:
+                sec_part = (
+                    f", security={b.pending_security_updates}"
+                    if b.pending_security_updates is not None
+                    else ""
+                )
+                self.console.print(f"Updates: total={b.pending_updates_total}{sec_part}")
+            if b.reboot_required:
+                self.console.print("Reboot Required: yes")
+        if model.vulnerability:
+            v = model.vulnerability
+            if v.provider != "unknown" or v.cve_ids or v.advisory_ids:
+                self.console.print(
+                    f"Vulnerability Posture: provider={v.provider}, "
+                    f"cves={len(v.cve_ids)}, advisories={len(v.advisory_ids)}, "
+                    f"packages={len(v.affected_packages)}"
+                )
+        if model.network_surface and model.network_surface.endpoints:
+            public_eps = [ep for ep in model.network_surface.endpoints if ep.public_exposed]
+            self.console.print(
+                f"Network Surface: endpoints={len(model.network_surface.endpoints)}, "
+                f"public={len(public_eps)}"
+            )
 
         if model.projects:
             self.console.print("\nPROJECTS:")
             for p in model.projects:
                 self.console.print(f"- {p.path} ({p.type.value}) [Conf: {p.confidence:.0%}]")
+        self._report_upstream_probes(model)
 
     def report_wss_inventory(self, inventory: list) -> None:
         """Report WebSocket inventory."""
@@ -127,3 +173,21 @@ class PlainReporter(BaseReporter):
             if ws.issues:
                 self.console.print(f"   Issues: {', '.join(ws.issues)}")
             self.console.print()
+
+    def _report_upstream_probes(self, model: ServerModel) -> None:
+        probes = getattr(model, "upstream_probes", []) or []
+        if not probes:
+            return
+        self.console.print("\nACTIVE UPSTREAM PROBES")
+        for probe in probes:
+            ws_status = getattr(probe, "ws_status", None) or (
+                str(getattr(probe, "ws_code", "")) if getattr(probe, "ws_code", None) is not None else "n/a"
+            )
+            self.console.print(
+                f"- {probe.target} [{probe.status}] tcp="
+                f"{'ok' if getattr(probe, 'tcp_ok', None) else ('fail' if getattr(probe, 'tcp_ok', None) is not None else 'n/a')} "
+                f"http={getattr(probe, 'http_code', None) if getattr(probe, 'http_code', None) is not None else 'n/a'} "
+                f"ws={ws_status}"
+            )
+            if getattr(probe, "ws_detail", None):
+                self.console.print(f"    ws_detail: {probe.ws_detail}")

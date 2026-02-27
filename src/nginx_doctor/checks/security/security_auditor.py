@@ -59,13 +59,10 @@ class SecurityAuditor(BaseCheck):
         """Utility to iterate all (server, location) pairs including nested ones."""
         pairs = []
         for server in info.servers:
-            # print(f"DEBUG_SEC: server {server.server_names} has {len(server.locations)} locations")
             for loc in server.locations:
                 all_locs = self._get_all_locations(loc)
-                # print(f"DEBUG_SEC: loc {loc.path} expanded to {len(all_locs)} items")
                 for nested in all_locs:
                     pairs.append((server, nested))
-        print(f"DEBUG_SEC: total pairs: {len(pairs)}")
         return pairs
     
     def _check_security_headers(self, info: "NginxInfo | None") -> list[Finding]:
@@ -106,8 +103,6 @@ class SecurityAuditor(BaseCheck):
                         excerpt=f"Location '{location.path}' defines add_header, clearing parent headers",
                         command="",
                     ))
-                elif server.headers:
-                    pass # inherited from server, which is fine if server has them
                 
                 findings.append(Finding(
                     id="SEC-HEAD-1",
@@ -205,13 +200,19 @@ class SecurityAuditor(BaseCheck):
                     break
             
             if not has_dotfile_block:
-                # Only warn if it's a default server or has valid server_names
+                proxy_only = self._is_proxy_only_server(server)
+                severity = Severity.INFO if proxy_only else Severity.WARNING
+                risk_line = (
+                    "Server appears proxy-only with minimal direct filesystem exposure."
+                    if proxy_only
+                    else "Server serves content from filesystem roots/aliases where dotfiles may leak."
+                )
                 findings.append(Finding(
                     id="NGX-SEC-3",
-                    severity=Severity.WARNING,
-                    confidence=0.8,
+                    severity=severity,
+                    confidence=0.85,
                     condition=f"Server {server.server_names} missing dotfile protection",
-                    cause="No location block detected targeting dotfiles (e.g., location ~ /\\.).",
+                    cause=f"No location block detected targeting dotfiles (e.g., location ~ /\\.). {risk_line}",
                     evidence=[Evidence(
                         source_file=server.source_file,
                         line_number=server.line_number,
@@ -230,6 +231,20 @@ class SecurityAuditor(BaseCheck):
                 ))
         
         return findings
+
+    def _is_proxy_only_server(self, server: ServerBlock) -> bool:
+        """Heuristic: server with no root and only proxy locations."""
+        if server.root:
+            return False
+        if not server.locations:
+            return False
+
+        for location in server.locations:
+            if location.root or location.alias or location.fastcgi_pass:
+                return False
+            if not location.proxy_pass:
+                return False
+        return True
 
     def _check_php_in_uploads(self, info: "NginxInfo | None") -> list[Finding]:
         """NGX-SEC-4: Check if PHP execution is supposedly blocked in uploads."""

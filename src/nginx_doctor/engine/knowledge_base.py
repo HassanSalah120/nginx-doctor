@@ -136,6 +136,113 @@ KNOWLEDGE_BASE = {
         risk="Frequent disconnections requiring client reconnection logic.",
         ignore="If you implement application-layer heartbeats more frequent than the timeout.",
     ),
+
+    # INFRASTRUCTURE
+    "MYSQL-1": Explanation(
+        why="Databases should not be broadly exposed to public interfaces.",
+        risk="Credential brute-force, exploitation, and data exfiltration risk.",
+        ignore="If strict network segmentation and firewall rules are externally enforced.",
+    ),
+    "MYSQL-2": Explanation(
+        why="A configured but stopped database often indicates an outage or drift.",
+        risk="Database-dependent requests fail or degrade unexpectedly.",
+        ignore="If this host intentionally does not run MySQL in this environment.",
+    ),
+    "FIREWALL-1": Explanation(
+        why="Host-level firewall provides defense in depth around exposed services.",
+        risk="Misbound services are reachable from unintended networks.",
+        ignore="If host is fully isolated and upstream firewall policy is enforced and audited.",
+    ),
+    "FIREWALL-2": Explanation(
+        why="Unknown firewall state means security assumptions cannot be validated.",
+        risk="Blind spots in network hardening and compliance evidence.",
+        ignore="If another trusted telemetry/control plane already proves network policy.",
+    ),
+    "HOST-CPU-1": Explanation(
+        why="Load significantly above core capacity indicates CPU scheduling pressure.",
+        risk="Latency spikes, queueing, and timeout risk under traffic.",
+        ignore="If this is a short-lived batch window and user traffic is unaffected.",
+    ),
+    "HOST-MEM-1": Explanation(
+        why="Low available memory increases reclaim/OOM risk.",
+        risk="Process kills, instability, and severe performance degradation.",
+        ignore="If memory pressure is brief and autoscaling/remediation is in place.",
+    ),
+    "HOST-SWAP-1": Explanation(
+        why="Heavy swap usage often indicates sustained memory pressure.",
+        risk="Very high latency and cascading timeout failures.",
+        ignore="If swap is intentionally used and latency SLOs are still met.",
+    ),
+    "HOST-DISK-1": Explanation(
+        why="High disk utilization can break writes for logs, sockets, and temp files.",
+        risk="Service crashes, failed deploys, and data loss events.",
+        ignore="If cleanup/expansion is already scheduled before reaching critical capacity.",
+    ),
+    "HOST-DISK-2": Explanation(
+        why="Inodes track how many files/directories can exist on a filesystem.",
+        risk="New files cannot be created even when disk space is still available.",
+        ignore="If this is a temporary spike and inode cleanup is already in progress.",
+    ),
+    "SSH-1": Explanation(
+        why="Direct root SSH login removes an isolation layer between user access and root privileges.",
+        risk="Credential compromise immediately grants full-system control.",
+        ignore="Rarely justified; prefer disabled root login with sudo escalation.",
+    ),
+    "SSH-2": Explanation(
+        why="Password auth is weaker against brute-force attacks than key-based authentication.",
+        risk="Higher probability of unauthorized SSH access attempts succeeding.",
+        ignore="If strong compensating controls exist (MFA bastion, strict IP allow-list).",
+    ),
+    "PATCH-1": Explanation(
+        why="Pending security updates often represent known vulnerabilities.",
+        risk="Exploitable CVEs may remain active on the host.",
+        ignore="If staged rollout is in progress and exposure window is tightly controlled.",
+    ),
+    "PATCH-2": Explanation(
+        why="Large pending update backlog indicates patch hygiene drift.",
+        risk="Operational and security drift from supported baseline.",
+        ignore="If this host is intentionally pinned and exceptions are documented.",
+    ),
+    "PATCH-3": Explanation(
+        why="Some updates require reboot to load new kernels/libraries.",
+        risk="Security fixes may not be fully active until restart.",
+        ignore="If reboot is already scheduled in an approved maintenance window.",
+    ),
+    "VULN-1": Explanation(
+        why="CVE references in package security metadata indicate known vulnerable components.",
+        risk="Unpatched CVEs can be exploited remotely or locally depending on exposure.",
+        ignore="If updates are already staged and rollout is actively in progress.",
+    ),
+    "VULN-2": Explanation(
+        why="Security advisories indicate pending security fixes even without explicit CVE mapping.",
+        risk="Host may still have unpatched security issues.",
+        ignore="If advisory feed is stale/noisy and you have equivalent validated telemetry elsewhere.",
+    ),
+    "VULN-3": Explanation(
+        why="A large set of affected packages indicates patch backlog and elevated operational risk.",
+        risk="More components stay in vulnerable/outdated state for longer.",
+        ignore="If this is a one-time maintenance backlog already being drained.",
+    ),
+    "NET-1": Explanation(
+        why="Cleartext legacy protocols on public interfaces are high-risk by design.",
+        risk="Credentials/data can be intercepted and exploited.",
+        ignore="If service is fully isolated to private test networks only (rare).",
+    ),
+    "NET-2": Explanation(
+        why="Public data/control-plane ports expose high-value targets directly.",
+        risk="Unauthorized access, data leakage, and service compromise.",
+        ignore="If strict allow-listing and compensating controls are externally enforced and audited.",
+    ),
+    "NET-3": Explanation(
+        why="Many public ports significantly increase attack surface.",
+        risk="Higher probability of exploit path discovery and operational mistakes.",
+        ignore="If host intentionally acts as a multi-service edge node with hardened controls.",
+    ),
+    "NET-4": Explanation(
+        why="Unidentified exposed services create inventory blindspots.",
+        risk="Unknown services may bypass baseline hardening and monitoring.",
+        ignore="If service ownership and exposure are already documented elsewhere.",
+    ),
 }
 
 def get_explanation(finding_id: str) -> Explanation | None:

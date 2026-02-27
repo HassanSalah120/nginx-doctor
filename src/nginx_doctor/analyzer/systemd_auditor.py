@@ -61,6 +61,8 @@ class SystemdAuditor:
         findings: list[Finding] = []
         
         for svc in self.model.runtime.systemd_services:
+            if self._defer_failed_unit_to_specialized_auditor(svc.name):
+                continue
             if svc.state == "failed" or svc.substate == "failed":
                 findings.append(Finding(
                     id="SYSTEMD-2",
@@ -79,3 +81,7 @@ class SystemdAuditor:
                 ))
                 
         return findings
+
+    def _defer_failed_unit_to_specialized_auditor(self, service_name: str) -> bool:
+        """Avoid duplicate/severity-conflicting findings for specialized domains."""
+        return service_name == "certbot.service"

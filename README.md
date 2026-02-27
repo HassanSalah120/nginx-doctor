@@ -69,6 +69,32 @@ python -m nginx_doctor diagnose prod-server --format json > report.json
 python -m nginx_doctor diagnose prod-server --format plain
 ```
 
+### 5. Project Setup Wizard (Web UI)
+
+Start the local web wizard to configure new Nginx projects:
+
+```bash
+nginx-doctor web --port 8765
+```
+
+Then open: **http://127.0.0.1:8765/wizard**
+
+The wizard provides a 5-step flow:
+
+1. **Connect** - SSH into your server
+2. **Domain** - Select target domain from detected server_names
+3. **Project** - Define path, type (Laravel/Static/Proxy), and options
+4. **Preview** - Dry-run validation and generated config snippet
+5. **Apply** - Safely apply with backup + nginx -t + rollback
+
+**Security Features:**
+
+- 🔒 Runs on localhost only (127.0.0.1)
+- 🔐 Uses your existing SSH credentials
+- 📝 Typed confirmation required for apply
+- 💾 Automatic backup before any change
+- ↩️ Automatic rollback on nginx -t failure
+
 ## 🛠️ Diagnostic Rule IDs
 
 | ID         | Description                                                 | Severity |

@@ -4,6 +4,7 @@ from unittest.mock import MagicMock
 from nginx_doctor.model.server import (
     CapabilityLevel, 
     ServiceState,
+    ServerModel,
     RuntimeModel, 
     SystemdService,
     RedisInstance,
@@ -192,3 +193,21 @@ def test_auditors_logic(sample_server_model):
     w_findings = w_auditor.audit()
     assert len(w_findings) == 1
     assert "no scheduler found" in w_findings[0].condition
+
+
+def test_systemd_auditor_skips_certbot_failed_unit():
+    """certbot.service failure is handled by CertbotAuditor, not generic SYSTEMD-2."""
+    model = ServerModel(hostname="test")
+    model.runtime = RuntimeModel(
+        systemd_services=[
+            SystemdService(
+                name="certbot.service",
+                state="failed",
+                substate="failed",
+                restart_count=0,
+            )
+        ]
+    )
+
+    findings = SystemdAuditor(model).audit()
+    assert findings == []

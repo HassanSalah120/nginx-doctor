@@ -53,6 +53,7 @@ class NginxDoctorAnalyzer:
         findings.extend(self._check_missing_try_files())
         findings.extend(self._check_php_socket_mismatch())
         findings.extend(self._check_duplicate_server_names())
+        findings.extend(self._check_path_routing_conflicts())
         findings.extend(self._check_default_sites_enabled())
         findings.extend(self._check_php_version_consistency())
         
@@ -268,6 +269,13 @@ class NginxDoctorAnalyzer:
         for name, servers in name_to_servers.items():
             if len(servers) <= 1:
                 continue  # Not a duplicate
+
+            winner = self._simulate_routing_winner(servers)
+            winner_ref = f"{winner.source_file}:{winner.line_number}" if winner else "unknown"
+            shadowed_count = len(servers) - (1 if winner else 0)
+            impact = self._duplicate_server_effective_impact(winner, [s for s in servers if s is not winner])
+            severity = impact["severity"]
+            env_split = self._is_prod_local_split_duplicate(servers)
             
             evidence_list = [
                 Evidence(
@@ -278,21 +286,239 @@ class NginxDoctorAnalyzer:
                 )
                 for s in servers
             ]
+            if winner:
+                evidence_list.append(
+                    Evidence(
+                        source_file=winner.source_file,
+                        line_number=winner.line_number,
+                        excerpt=f"Likely winner by load order/listen precedence for '{name}'",
+                        command="nginx -T (effective routing simulation)",
+                    )
+                )
+            for diff in impact.get("diffs", [])[:4]:
+                evidence_list.append(
+                    Evidence(
+                        source_file=diff.get("file", "nginx -T"),
+                        line_number=1,
+                        excerpt=(
+                            "Shadow diff: "
+                            f"location_delta={diff.get('locations_delta', 0)}, "
+                            f"upstream_delta={diff.get('upstreams_delta', 0)}"
+                        ),
+                        command="nginx -T (winner vs shadowed diff)",
+                    )
+                )
             
             findings.append(
                 Finding(
-                    severity=Severity.WARNING,
-                    confidence=0.95,
+                    severity=severity,
+                    confidence=0.96 if severity == Severity.WARNING else 0.9,
                     condition=f"Duplicate server_name '{name}'",
-                    cause=f"Found {len(servers)} declarations across different blocks",
+                    cause=(
+                        f"Found {len(servers)} declarations across different blocks. "
+                        f"Likely effective winner: {winner_ref}; shadowed blocks: {shadowed_count}. "
+                        f"Effective impact: {impact['summary']}. "
+                        f"Blast radius: {impact.get('blast_radius', 'unknown')}."
+                        + (
+                            " This appears to be a production/local split "
+                            "(e.g., default.conf + default.local.conf) and is treated as "
+                            "safe duplication unless routing behavior diverges."
+                            if env_split and severity == Severity.INFO
+                            else ""
+                        )
+                    ),
                     evidence=evidence_list,
-                    treatment="Remove or rename duplicate server blocks to prevent shadowing",
-                    impact=[
-                        "Unpredictable request routing",
-                        "One configuration may shadow the other",
-                    ],
+                    treatment=(
+                        (
+                            "Optional cleanup: consolidate production/local split blocks if you want "
+                            "a single source of truth. Current behavior is low-risk based on effective routing."
+                            if env_split and severity == Severity.INFO
+                            else "Keep one authoritative server block per server_name/listen pair. "
+                            f"Prefer the winner at {winner_ref} and merge/remove shadowed definitions."
+                        )
+                    ),
+                    impact=impact["impact_lines"],
+                    correlation=impact.get("diffs", []),
                 )
             )
+
+        return findings
+
+    def _simulate_routing_winner(self, servers: list[ServerBlock]) -> ServerBlock | None:
+        """Best-effort simulation of which duplicated block wins matching precedence."""
+        if not servers:
+            return None
+
+        def precedence(server: ServerBlock) -> tuple[int, int, int]:
+            has_default = 1 if any("default_server" in listen for listen in server.listen) else 0
+            has_ssl = 0 if any("443" in listen or "ssl" in listen.lower() for listen in server.listen) else 1
+            return (has_default, has_ssl, server.line_number or 10**9)
+
+        return sorted(servers, key=precedence)[0]
+
+    def _duplicate_server_effective_impact(self, winner: ServerBlock | None, shadowed: list[ServerBlock]) -> dict:
+        if not winner or not shadowed:
+            return {
+                "severity": Severity.INFO,
+                "summary": "insufficient routing context to estimate impact",
+                "impact_lines": ["Configuration hygiene issue; effective impact unknown."],
+                "blast_radius": "unknown",
+                "diffs": [],
+            }
+        winner_sig = self._server_behavior_signature(winner)
+        differs = []
+        same = 0
+        for candidate in shadowed:
+            cand_sig = self._server_behavior_signature(candidate)
+            if cand_sig == winner_sig:
+                same += 1
+                continue
+            differs.append(
+                {
+                    "file": f"{candidate.source_file}:{candidate.line_number}",
+                    "locations_delta": len(cand_sig["locations"] ^ winner_sig["locations"]),
+                    "upstreams_delta": len(cand_sig["upstreams"] ^ winner_sig["upstreams"]),
+                }
+            )
+
+        if not differs:
+            return {
+                "severity": Severity.INFO,
+                "summary": "shadowed blocks are behaviorally equivalent to winner",
+                "impact_lines": [
+                    "Low immediate routing impact (duplicate definitions appear equivalent).",
+                    "Configuration drift risk if copies diverge later.",
+                ],
+                "blast_radius": f"{same} shadowed block(s) equivalent",
+                "diffs": [],
+            }
+
+        meaningful_upstream_diff = any(item["upstreams_delta"] > 0 for item in differs)
+        if meaningful_upstream_diff:
+            return {
+                "severity": Severity.WARNING,
+                "summary": "winner/shadowed blocks route to different upstream targets",
+                "impact_lines": [
+                    "Unpredictable request routing with meaningful backend differences.",
+                    "One configuration may silently shadow a different upstream path.",
+                ],
+                "blast_radius": f"{len(differs)} shadowed block(s) differ on upstream routing",
+                "diffs": differs,
+            }
+
+        only_non_behavioral_diff = all(
+            item.get("upstreams_delta", 0) == 0 and item.get("locations_delta", 0) == 0
+            for item in differs
+        )
+        if only_non_behavioral_diff:
+            return {
+                "severity": Severity.INFO,
+                "summary": "duplicate blocks are effectively identical (cleanup-level duplication)",
+                "impact_lines": [
+                    "Low immediate routing impact (effective handler behavior is equivalent).",
+                    "Cleanup recommended to prevent future drift between duplicate blocks.",
+                ],
+                "blast_radius": f"{len(differs)} shadowed block(s) with no location/upstream behavior delta",
+                "diffs": differs,
+            }
+
+        return {
+            "severity": Severity.WARNING,
+            "summary": "winner/shadowed blocks differ in location behavior",
+            "impact_lines": [
+                "Request handling differs between duplicate server blocks.",
+                "Shadowing can break expected path behavior under config changes.",
+            ],
+            "blast_radius": f"{len(differs)} shadowed block(s) differ on path/location behavior",
+            "diffs": differs,
+        }
+
+    @staticmethod
+    def _server_behavior_signature(server: ServerBlock) -> dict:
+        locations: set[str] = set()
+        upstreams: set[str] = set()
+        for loc in server.locations or []:
+            signature = "|".join(
+                [
+                    (loc.path or "").strip(),
+                    (loc.proxy_pass or "").strip(),
+                    (loc.fastcgi_pass or "").strip(),
+                    (loc.root or "").strip(),
+                    (loc.alias or "").strip(),
+                    (loc.try_files or "").strip(),
+                    (loc.return_directive or "").strip(),
+                    "stub_status:on" if loc.stub_status else "",
+                ]
+            )
+            locations.add(signature)
+            if loc.proxy_pass:
+                upstreams.add((loc.proxy_pass or "").strip())
+            if loc.fastcgi_pass:
+                upstreams.add((loc.fastcgi_pass or "").strip())
+        listens = set((server.listen or []))
+        return {"locations": locations, "upstreams": upstreams, "listen": listens}
+
+    @staticmethod
+    def _is_prod_local_split_duplicate(servers: list[ServerBlock]) -> bool:
+        """Detect common default.conf + default.local.conf split patterns."""
+        files = [((s.source_file or "").lower()) for s in servers]
+        has_local = any(".local.conf" in f for f in files)
+        has_non_local = any(f.endswith(".conf") and ".local.conf" not in f for f in files)
+        return has_local and has_non_local
+
+    def _check_path_routing_conflicts(self) -> list[Finding]:
+        """Detect path-based routing conflicts across multi-project server blocks."""
+        findings: list[Finding] = []
+        if not self.model.nginx:
+            return findings
+
+        for server in self.model.nginx.servers:
+            path_map: dict[str, list[LocationBlock]] = {}
+            for location in server.locations:
+                normalized = location.path.strip()
+                if not normalized:
+                    continue
+                path_map.setdefault(normalized, []).append(location)
+
+            for path, entries in path_map.items():
+                if len(entries) <= 1:
+                    continue
+
+                proxy_targets = {(loc.proxy_pass or "").strip() for loc in entries if loc.proxy_pass}
+                fastcgi_targets = {(loc.fastcgi_pass or "").strip() for loc in entries if loc.fastcgi_pass}
+
+                if len(proxy_targets) <= 1 and len(fastcgi_targets) <= 1:
+                    continue
+
+                findings.append(
+                    Finding(
+                        id="NGX-ROUTE-1",
+                        severity=Severity.WARNING,
+                        confidence=0.9,
+                        condition=f"Conflicting location path '{path}' in server block",
+                        cause=(
+                            f"Path '{path}' is declared {len(entries)} times with divergent backends, "
+                            "which may produce precedence-dependent routing behavior."
+                        ),
+                        evidence=[
+                            Evidence(
+                                source_file=loc.source_file,
+                                line_number=loc.line_number,
+                                excerpt=(
+                                    f"location {loc.path} -> proxy_pass={loc.proxy_pass or '-'} "
+                                    f"fastcgi_pass={loc.fastcgi_pass or '-'}"
+                                ),
+                                command="nginx -T",
+                            )
+                            for loc in entries
+                        ],
+                        treatment="Consolidate duplicate location paths and keep one deterministic routing definition per path.",
+                        impact=[
+                            "Requests may be handled by unintended upstream",
+                            "Shadow-routing bugs in multi-project setups",
+                        ],
+                    )
+                )
 
         return findings
 

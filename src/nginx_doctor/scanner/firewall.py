@@ -20,37 +20,105 @@ class FirewallScanner:
         self.ssh = ssh
 
     def scan(self) -> str:
-        """Perform firewall scan.
+        """Backward-compatible firewall state scan."""
+        return self.scan_details().get("state", "unknown")
+
+    def scan_details(self) -> dict:
+        """Perform firewall scan and return correlated posture details.
 
         Returns:
-            String state: 'present', 'not_detected', or 'unknown'.
+            {
+              "state": "present|not_detected|unknown",
+              "ufw_enabled": bool|None,
+              "ufw_default_incoming": str|None,
+              "rules": list[str],
+            }
         """
-        # 1. Check UFW
+        state = "not_detected"
+        ufw_enabled: bool | None = None
+        ufw_default_incoming: str | None = None
+        rules: list[str] = []
+
+        # 1. UFW details (highest signal for OPEN/BLOCKED correlation)
         if self.ssh.run("which ufw", timeout=2).success:
-            res = self.ssh.run("ufw status", timeout=2)
-            if res.success and "active" in res.stdout.lower() and "inactive" not in res.stdout.lower():
-                return "present"
+            res = self.ssh.run("ufw status numbered 2>/dev/null || ufw status 2>/dev/null", timeout=3)
+            if res.success:
+                out = res.stdout.strip()
+                lower = out.lower()
+                if "status: active" in lower:
+                    state = "present"
+                    ufw_enabled = True
+                elif "status: inactive" in lower:
+                    ufw_enabled = False
+                parsed = self._parse_ufw_rules(out)
+                if parsed:
+                    rules.extend(parsed)
+            verbose = self.ssh.run("ufw status verbose 2>/dev/null", timeout=3)
+            if verbose.success and verbose.stdout:
+                parsed_default = self._parse_ufw_default_incoming(verbose.stdout)
+                if parsed_default:
+                    ufw_default_incoming = parsed_default
+                parsed_verbose_rules = self._parse_ufw_rules(verbose.stdout)
+                if parsed_verbose_rules:
+                    for rule in parsed_verbose_rules:
+                        if rule not in rules:
+                            rules.append(rule)
 
-        # 2. Check NFT (Modern Ubuntu/Debian)
-        if self.ssh.run("which nft", timeout=2).success:
+        # 2. NFT fallback (Modern Ubuntu/Debian)
+        if state != "present" and self.ssh.run("which nft", timeout=2).success:
             res = self.ssh.run("nft list ruleset", timeout=2)
-            if res.success and len(res.stdout.strip()) > 100: # Heuristic for non-empty ruleset
-                return "present"
+            if res.success and len(res.stdout.strip()) > 100:
+                state = "present"
 
-        # 3. Check Iptables
-        if self.ssh.run("which iptables", timeout=2).success:
+        # 3. Iptables fallback
+        if state != "present" and self.ssh.run("which iptables", timeout=2).success:
             res = self.ssh.run("iptables -S", timeout=2)
             if res.success:
-                # Common default rules like "-P INPUT ACCEPT" are usually not enough to count as "present"
-                # If there are more than just policy lines, count as present
-                lines = [l for l in res.stdout.strip().split("\n") if not l.startswith("-P ")]
+                lines = [l for l in res.stdout.strip().split("\n") if l and not l.startswith("-P ")]
                 if len(lines) > 2:
-                    return "present"
+                    state = "present"
 
-        # Fallback
-        if not self.ssh.run("which ufw", timeout=2).success and \
-           not self.ssh.run("which nft", timeout=2).success and \
-           not self.ssh.run("which iptables", timeout=2).success:
+        # 4. Fully unknown toolchain
+        if (
+            not self.ssh.run("which ufw", timeout=2).success
+            and not self.ssh.run("which nft", timeout=2).success
+            and not self.ssh.run("which iptables", timeout=2).success
+        ):
+            state = "unknown"
+
+        return {
+            "state": state,
+            "ufw_enabled": ufw_enabled,
+            "ufw_default_incoming": ufw_default_incoming,
+            "rules": rules,
+        }
+
+    def _parse_ufw_rules(self, output: str) -> list[str]:
+        """Extract compact rule lines from ufw status output."""
+        rules: list[str] = []
+        for raw in output.splitlines():
+            line = raw.strip()
+            if not line:
+                continue
+            low = line.lower()
+            if low.startswith("status:") or low.startswith("to ") or low.startswith("--"):
+                continue
+            if "allow" not in low and "deny" not in low and "reject" not in low:
+                continue
+            line = line.replace("[", "").replace("]", "")
+            rules.append(" ".join(line.split()))
+        return rules[:200]
+
+    def _parse_ufw_default_incoming(self, output: str) -> str | None:
+        """Extract default incoming policy from `ufw status verbose` output."""
+        for raw in output.splitlines():
+            line = raw.strip().lower()
+            if not line.startswith("default:"):
+                continue
+            # Typical: "Default: deny (incoming), allow (outgoing), disabled (routed)"
+            if "deny (incoming)" in line or "reject (incoming)" in line:
+                return "deny"
+            if "allow (incoming)" in line:
+                return "allow"
             return "unknown"
-
-        return "not_detected"
+        return None

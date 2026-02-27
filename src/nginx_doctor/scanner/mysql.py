@@ -23,6 +23,7 @@ class MySQLScanResult:
     status: ServiceStatus
     databases: list[str] = field(default_factory=list)
     config_detected: bool = False
+    bind_addresses: list[str] = field(default_factory=list)
 
 
 class MySQLScanner:
@@ -55,7 +56,7 @@ class MySQLScanner:
             MySQLScanResult with all collected data.
         """
         # 1. Detect running processes and ports
-        ports, version, state = self._find_running_instances()
+        ports, version, state, bind_addresses = self._find_running_instances()
         
         # 2. Check config presence
         config_present = self._check_config_presence()
@@ -81,12 +82,14 @@ class MySQLScanner:
                 version=version,
                 listening_ports=ports,
             ),
-            config_detected=config_present
+            config_detected=config_present,
+            bind_addresses=bind_addresses,
         )
 
-    def _find_running_instances(self) -> tuple[list[int], str | None, ServiceState]:
+    def _find_running_instances(self) -> tuple[list[int], str | None, ServiceState, list[str]]:
         """Find running mysqld instances and their ports."""
         ports: list[int] = []
+        bind_addresses: list[str] = []
         version: str | None = None
         state = ServiceState.NOT_INSTALLED
 
@@ -106,10 +109,29 @@ class MySQLScanner:
             # Check network listeners for non-standard ports
             ss_result = self.ssh.run("ss -lntp | grep mysqld", timeout=2)
             if ss_result.success:
-                # Extract ports from e.g. "LISTEN 0 80 *:3306 *:* users:(("mysqld",pid=123,fd=45))"
-                matches = re.findall(r":(\d+)\s+", ss_result.stdout)
-                for p in matches:
-                    ports.append(int(p))
+                for line in ss_result.stdout.splitlines():
+                    parts = line.split()
+                    if len(parts) < 5:
+                        continue
+
+                    local_addr = parts[4]
+                    addr = local_addr
+                    port = None
+
+                    if local_addr.startswith("[") and "]:" in local_addr:
+                        host_part, port_part = local_addr.rsplit("]:", 1)
+                        addr = host_part.lstrip("[")
+                        if port_part.isdigit():
+                            port = int(port_part)
+                    elif ":" in local_addr:
+                        host_part, port_part = local_addr.rsplit(":", 1)
+                        addr = host_part
+                        if port_part.isdigit():
+                            port = int(port_part)
+
+                    if port is not None:
+                        ports.append(port)
+                        bind_addresses.append(addr)
             
             # If ss failed or yielded nothing, check process args for --port
             if not ports:
@@ -119,12 +141,13 @@ class MySQLScanner:
                 else:
                     # Default
                     ports.append(3306)
+                bind_addresses.append("127.0.0.1")
         else:
             # Check if installed but stopped
             if self.ssh.run("which mysqld", timeout=2).success or self.ssh.run("systemctl status mysql", timeout=2).success:
                 state = ServiceState.STOPPED
 
-        return sorted(list(set(ports))), version, state
+        return sorted(list(set(ports))), version, state, sorted(list(set(bind_addresses)))
 
     def _check_config_presence(self) -> bool:
         """Check if MySQL config files exist."""

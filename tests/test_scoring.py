@@ -3,7 +3,7 @@
 Verifies deterministic scoring rules:
 - Max Score: 100
 - Categories: Security (40), Performance (20), Architecture (20), App (20)
-- Penalties: Critical (-10), Warning (-4), Info (-1)
+- Penalties: exploitability-aware (base Critical -8, Warning -3, Info -0 with modifiers)
 - Min score per category: 0
 """
 
@@ -28,7 +28,7 @@ def test_perfect_score():
     assert score.app.current_points == 20
 
 def test_critical_security_penalty():
-    """One critical security finding should deduct 10 points from Security."""
+    """One critical security finding should deduct base 8 points from Security."""
     f = Finding(
         id="NGX-SEC-3", # Security category
         condition="Dotfiles exposed",
@@ -42,8 +42,8 @@ def test_critical_security_penalty():
     engine = ScoringEngine()
     score = engine.calculate([f])
     
-    assert score.security.current_points == 30 # 40 - 10
-    assert score.total == 90
+    assert score.security.current_points == 32 # 40 - 8
+    assert score.total == 92
     
 def test_category_floor():
     """Score should not go below 0 per category."""
@@ -77,7 +77,26 @@ def test_mixed_categories():
     engine = ScoringEngine()
     score = engine.calculate(findings)
     
-    assert score.performance.current_points == 16 # 20 - 4
-    assert score.app.current_points == 10 # 20 - 10
-    assert score.architecture.current_points == 19 # 20 - 1
-    assert score.total == 100 - 4 - 10 - 1 # 85
+    assert score.performance.current_points == 17 # 20 - 3
+    assert score.app.current_points == 12 # 20 - 8
+    assert score.architecture.current_points == 20 # 20 - 0
+    assert score.total == 89
+
+
+def test_dev_port_closure_meaningfully_improves_score():
+    """Closing a public dev port should produce a clear score improvement."""
+    engine = ScoringEngine()
+    dev_exposed = [
+        Finding(
+            id="NGX000-2",
+            severity=Severity.CRITICAL,
+            condition="Docker port 5173 is exposed publicly bypassing Nginx",
+            cause="dev port public",
+            treatment="bind localhost",
+            confidence=1.0,
+            evidence=[MagicMock()],
+        )
+    ]
+    before = engine.calculate(dev_exposed).total
+    after = engine.calculate([]).total
+    assert after - before >= 8

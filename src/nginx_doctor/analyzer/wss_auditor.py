@@ -57,6 +57,7 @@ class WSLocation:
     read_timeout: int | None = None
     send_timeout: int | None = None
     risk_level: str = "OK"
+    handshake_quality: str = "UNKNOWN"
     issues: list[str] = field(default_factory=list)
 
 
@@ -93,6 +94,7 @@ class WSSAuditor:
         findings.extend(self._check_forwarded_headers())
         findings.extend(self._check_cors_security())
         findings.extend(self._check_wildcard_exposure())
+        findings.extend(self._check_ws_path_conflicts())
         findings.extend(self._check_dotfile_protection())
         
         return findings
@@ -177,7 +179,7 @@ class WSSAuditor:
     def _assess_risk(self, ws_loc: WSLocation) -> None:
         """Assess the risk level of a WebSocket location."""
         issues = []
-        
+
         if not ws_loc.has_http_version_11:
             issues.append("Missing proxy_http_version 1.1")
         if not ws_loc.has_upgrade:
@@ -188,15 +190,39 @@ class WSSAuditor:
             issues.append("Buffering may cause issues")
         if ws_loc.read_timeout and ws_loc.read_timeout < 60:
             issues.append("Read timeout too low")
-            
+        if ws_loc.send_timeout and ws_loc.send_timeout < 60:
+            issues.append("Send timeout too low")
+
         ws_loc.issues = issues
-        
-        if not ws_loc.has_http_version_11 or not ws_loc.has_upgrade or not ws_loc.has_connection:
+        ws_loc.handshake_quality = self._classify_handshake_quality(ws_loc)
+
+        if ws_loc.handshake_quality == "BROKEN":
             ws_loc.risk_level = "CRITICAL"
-        elif issues:
+        elif ws_loc.handshake_quality == "DEGRADED":
             ws_loc.risk_level = "WARNING"
         else:
             ws_loc.risk_level = "OK"
+
+    def _classify_handshake_quality(self, ws_loc: WSLocation) -> str:
+        """Handshake quality criteria:
+        - BROKEN: any mandatory WS upgrade primitive missing
+        - DEGRADED: handshake works but transport quality is weak (buffering/low timeout)
+        - GOOD: mandatory headers present and no transport degradation signals
+        """
+        mandatory_missing = (
+            not ws_loc.has_http_version_11
+            or not ws_loc.has_upgrade
+            or not ws_loc.has_connection
+        )
+        if mandatory_missing:
+            return "BROKEN"
+
+        degraded = (
+            ws_loc.buffering not in ("off", "default")
+            or (ws_loc.read_timeout is not None and ws_loc.read_timeout < 60)
+            or (ws_loc.send_timeout is not None and ws_loc.send_timeout < 60)
+        )
+        return "DEGRADED" if degraded else "GOOD"
 
     # === Individual Checks ===
 
@@ -490,6 +516,51 @@ class WSSAuditor:
                 ],
             ))
             
+        return findings
+
+    def _check_ws_path_conflicts(self) -> list[Finding]:
+        """Detect multiple WS backends for the same domain/path."""
+        findings: list[Finding] = []
+        if not self.ws_locations:
+            return findings
+
+        index: dict[tuple[str, str], list[WSLocation]] = {}
+        for ws in self.ws_locations:
+            key = (ws.domain, ws.location.path)
+            index.setdefault(key, []).append(ws)
+
+        for (domain, path), entries in index.items():
+            backends = {e.proxy_target for e in entries}
+            if len(backends) <= 1:
+                continue
+            findings.append(
+                Finding(
+                    id="NGX-WSS-009",
+                    severity=Severity.WARNING,
+                    confidence=0.9,
+                    condition=f"WebSocket route conflict on {domain}{path}",
+                    cause=(
+                        f"Same WS endpoint is defined with {len(backends)} different backend targets, "
+                        "which makes runtime behavior precedence-dependent."
+                    ),
+                    evidence=[
+                        Evidence(
+                            source_file=ws.server.source_file,
+                            line_number=ws.location.line_number,
+                            excerpt=f"location {ws.location.path} -> {ws.proxy_target}",
+                            command="nginx -T",
+                        )
+                        for ws in entries
+                    ],
+                    treatment=(
+                        "Keep one authoritative location per WS path/domain and remove shadowed alternatives."
+                    ),
+                    impact=[
+                        "Intermittent connection routing to wrong backend",
+                        "Debugging and session consistency issues",
+                    ],
+                )
+            )
         return findings
 
     def _check_dotfile_protection(self) -> list[Finding]:

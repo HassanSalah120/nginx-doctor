@@ -26,3 +26,5 @@ debug_remote.py
 Project.md
 *.html
 *.txt
+/reports
+/fix-pack

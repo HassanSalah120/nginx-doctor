@@ -160,7 +160,7 @@ class WorkerScanner:
         # Look for active timers
         if self.ssh.run("which systemctl").success:
             res = self.ssh.run("systemctl list-timers --all --no-pager")
-            if res.success and "artisan" in res.stdout or "scheduler" in res.stdout:
+            if res.success and ("artisan" in res.stdout or "scheduler" in res.stdout):
                 # Loose matching, but detecting if *any* scheduler is running
                 # Ideally we match the project path.
                 return True, "systemd-timer"

@@ -9,6 +9,10 @@ IMPORTANT: This module only ORCHESTRATES. It never reasons or makes decisions.
 """
 
 import contextlib
+import os
+import re
+from pathlib import Path
+
 import click
 from rich.console import Console
 from rich.panel import Panel
@@ -20,13 +24,14 @@ from nginx_doctor.actions.apply import ApplyAction
 from nginx_doctor.actions.generate import GenerateAction
 from nginx_doctor.actions.report import ReportAction
 from nginx_doctor.actions.html_report import HTMLReportAction
+from nginx_doctor.actions.report_bundle import ReportBundleAction
 from nginx_doctor.analyzer.app_detector import AppDetector
 from nginx_doctor.analyzer.nginx_doctor import NginxDoctorAnalyzer
 from nginx_doctor.analyzer.server_auditor import ServerAuditor
 from nginx_doctor.config import ConfigManager
 from nginx_doctor.connector.ssh import SSHConfig, SSHConnector
 from nginx_doctor.engine.decision import DecisionEngine
-from nginx_doctor.model.server import ServerModel
+from nginx_doctor.model.server import ProjectType, ServerModel
 from nginx_doctor.parser.nginx_conf import NginxConfigParser
 from nginx_doctor.scanner.filesystem import FilesystemScanner
 from nginx_doctor.scanner.nginx import NginxScanner
@@ -34,15 +39,55 @@ from nginx_doctor.scanner.php import PHPScanner
 from nginx_doctor.scanner.docker import DockerScanner
 from nginx_doctor.scanner.mysql import MySQLScanner
 from nginx_doctor.scanner.nodejs import NodeScanner
-from nginx_doctor.scanner.nodejs import NodeScanner
+from nginx_doctor.scanner.certbot import CertbotScanner
+from nginx_doctor.scanner.network_surface import NetworkSurfaceScanner
 from nginx_doctor.scanner.firewall import FirewallScanner
 from nginx_doctor.scanner.systemd import SystemdScanner
 from nginx_doctor.scanner.redis import RedisScanner
+from nginx_doctor.scanner.security_baseline import SecurityBaselineScanner
+from nginx_doctor.scanner.telemetry import TelemetryScanner
+from nginx_doctor.scanner.vulnerability import VulnerabilityScanner
 from nginx_doctor.scanner.workers import WorkerScanner
+from nginx_doctor.scanner.tls_status import TLSStatusScanner
+from nginx_doctor.scanner.upstream_probe import UpstreamProbeScanner
 from nginx_doctor.analyzer.correlation_engine import CorrelationEngine
 from nginx_doctor.actions.safe_fix import SafeFixAction
 
 console = Console()
+
+
+def _safe_name(value: str) -> str:
+    """Convert host/profile names into filesystem-safe path parts."""
+    cleaned = re.sub(r"[^a-zA-Z0-9_.-]+", "-", value.strip())
+    return cleaned.strip("-") or "unknown-host"
+
+
+def _scan_time_label(scan_timestamp: str | None) -> str:
+    """Create date-only label for output paths (dd-mm-yyyy)."""
+    if scan_timestamp:
+        with contextlib.suppress(ValueError):
+            dt = datetime.datetime.fromisoformat(scan_timestamp.replace("Z", "+00:00"))
+            return dt.strftime("%d-%m-%Y")
+    return datetime.datetime.now().strftime("%d-%m-%Y")
+
+
+def _resolve_html_output_path(
+    output: str | None,
+    hostname: str,
+    scan_timestamp: str | None,
+) -> Path:
+    """Resolve output path for HTML report, defaulting to date-based host bundle."""
+    ts_label = _scan_time_label(scan_timestamp)
+    host_label = _safe_name(hostname)
+
+    if output:
+        out = Path(output).expanduser()
+        # If no suffix is provided, treat as directory target.
+        if out.suffix.lower() != ".html":
+            return out / f"{host_label}-{ts_label}.html"
+        return out
+
+    return Path("reports") / host_label / ts_label / "report.html"
 
 
 @click.group()
@@ -54,7 +99,6 @@ def main(ctx: click.Context, config: str | None) -> None:
 
     Diagnose Nginx + PHP problems, audit server health, and generate configs.
     """
-    from pathlib import Path
     ctx.ensure_object(dict)
     config_dir = Path(config) if config else None
     ctx.obj["config_mgr"] = ConfigManager(config_dir)
@@ -96,21 +140,35 @@ def _scan_server(ctx: click.Context, ssh: SSHConnector) -> ServerModel:
         docker_scanner = DockerScanner(ssh)
         mysql_scanner = MySQLScanner(ssh)
         node_scanner = NodeScanner(ssh)
+        network_scanner = NetworkSurfaceScanner(ssh)
         firewall_scanner = FirewallScanner(ssh)
+        telemetry_scanner = TelemetryScanner(ssh)
+        baseline_scanner = SecurityBaselineScanner(ssh)
+        vulnerability_scanner = VulnerabilityScanner(ssh)
 
         docker_data = docker_scanner.scan()
         mysql_data = mysql_scanner.scan()
         node_data = node_scanner.scan()
-        firewall_state = firewall_scanner.scan()
+        network_data = network_scanner.scan()
+        firewall_details = firewall_scanner.scan_details()
+        firewall_state = firewall_details.get("state", "unknown")
+        telemetry_data = telemetry_scanner.scan()
+        baseline_data = baseline_scanner.scan()
+        vulnerability_data = vulnerability_scanner.scan()
 
         from nginx_doctor.model.server import ServicesModel
         services = ServicesModel(
             docker=docker_data.status,
             docker_containers=docker_data.containers,
             mysql=mysql_data.status,
+            mysql_config_detected=mysql_data.config_detected,
+            mysql_bind_addresses=mysql_data.bind_addresses,
             node=node_data.status,
             node_processes=node_data.processes,
-            firewall=firewall_state
+            firewall=firewall_state,
+            firewall_ufw_enabled=firewall_details.get("ufw_enabled"),
+            firewall_ufw_default_incoming=firewall_details.get("ufw_default_incoming"),
+            firewall_rules=firewall_details.get("rules", []),
         )
 
         # Phase 15: Runtime Intelligence
@@ -140,6 +198,13 @@ def _scan_server(ctx: click.Context, ssh: SSHConnector) -> ServerModel:
         nginx_info.mode = nginx_data.mode
         nginx_info.container_id = nginx_data.container_id
         nginx_info.path_mapping = nginx_data.path_mapping
+        certbot_scanner = CertbotScanner(ssh)
+        tls_scanner = TLSStatusScanner(ssh)
+        probe_scanner = UpstreamProbeScanner(ssh)
+        certbot_data = certbot_scanner.scan(nginx_info)
+        tls_data = tls_scanner.scan(nginx_info)
+        probe_enabled = os.getenv("NGINX_DOCTOR_ACTIVE_PROBES", "1").strip().lower() not in {"0", "false", "no", "off"}
+        upstream_probes = probe_scanner.scan(nginx_info, enabled=probe_enabled)
         
         # PHASE 2: Discovery (Server-Block Centric)
         valid_roots, skipped_roots = nginx_scanner.get_all_roots(nginx_info)
@@ -271,7 +336,7 @@ def _scan_server(ctx: click.Context, ssh: SSHConnector) -> ServerModel:
             commit_hash = subprocess.check_output(
                 ["git", "rev-parse", "--short", "HEAD"], 
                 stderr=subprocess.DEVNULL,
-                cwd=pathlib.Path(__file__).parent.parent.parent
+                cwd=Path(__file__).parent.parent.parent
             ).decode().strip()
         except:
             pass
@@ -284,6 +349,13 @@ def _scan_server(ctx: click.Context, ssh: SSHConnector) -> ServerModel:
             php=php_info,
             services=services,
             projects=projects,
+            telemetry=telemetry_data,
+            security_baseline=baseline_data,
+            vulnerability=vulnerability_data,
+            certbot=certbot_data,
+            tls=tls_data,
+            network_surface=network_data,
+            upstream_probes=upstream_probes,
             scan_timestamp=datetime.datetime.now().isoformat(),
             doctor_version=__version__,
             commit_hash=commit_hash,
@@ -316,12 +388,76 @@ def check(ctx: click.Context, server: str) -> None:
             
             # Run analyzers
             dr_analyzer = NginxDoctorAnalyzer(model)
-            auditor = ServerAuditor(model)
-            findings = dr_analyzer.diagnose(additional_findings=auditor.audit())
+            from nginx_doctor.analyzer.wss_auditor import WSSAuditor
+            from nginx_doctor.analyzer.docker_auditor import DockerAuditor
+            from nginx_doctor.analyzer.node_auditor import NodeAuditor
+            from nginx_doctor.analyzer.systemd_auditor import SystemdAuditor
+            from nginx_doctor.analyzer.redis_auditor import RedisAuditor
+            from nginx_doctor.analyzer.worker_auditor import WorkerAuditor
+            from nginx_doctor.analyzer.mysql_auditor import MySQLAuditor
+            from nginx_doctor.analyzer.firewall_auditor import FirewallAuditor
+            from nginx_doctor.analyzer.telemetry_auditor import TelemetryAuditor
+            from nginx_doctor.analyzer.security_baseline_auditor import SecurityBaselineAuditor
+            from nginx_doctor.analyzer.vulnerability_auditor import VulnerabilityAuditor
+            from nginx_doctor.analyzer.network_surface_auditor import NetworkSurfaceAuditor
+            from nginx_doctor.analyzer.path_conflict_auditor import PathConflictAuditor
+            from nginx_doctor.analyzer.runtime_drift_auditor import RuntimeDriftAuditor
+            from nginx_doctor.analyzer.certbot_auditor import CertbotAuditor
+            from nginx_doctor.checks import CheckContext, run_checks
+            from nginx_doctor.engine.deduplication import deduplicate_findings
+
+            wss_auditor = WSSAuditor(model)
+            def _safe_audit(label: str, fn):
+                try:
+                    return fn()
+                except Exception as e:
+                    console.print(f"[dim]Skipping {label} audit due to model shape/runtime error: {e}[/]")
+                    return []
+            legacy_findings = dr_analyzer.diagnose(
+                additional_findings=(
+                    ServerAuditor(model).audit()
+                    + _safe_audit("WSS", wss_auditor.audit)
+                    + _safe_audit("Docker", DockerAuditor(model).audit)
+                    + _safe_audit("Node", NodeAuditor(model).audit)
+                    + _safe_audit("Systemd", SystemdAuditor(model).audit)
+                    + _safe_audit("Redis", RedisAuditor(model).audit)
+                    + _safe_audit("Worker", WorkerAuditor(model).audit)
+                    + _safe_audit("MySQL", MySQLAuditor(model).audit)
+                    + _safe_audit("Firewall", FirewallAuditor(model).audit)
+                    + _safe_audit("Telemetry", TelemetryAuditor(model).audit)
+                    + _safe_audit("SecurityBaseline", SecurityBaselineAuditor(model).audit)
+                    + _safe_audit("Vulnerability", VulnerabilityAuditor(model).audit)
+                    + _safe_audit("NetworkSurface", NetworkSurfaceAuditor(model).audit)
+                    + _safe_audit("PathConflict", PathConflictAuditor(model).audit)
+                    + _safe_audit("RuntimeDrift", RuntimeDriftAuditor(model).audit)
+                    + _safe_audit("Certbot", CertbotAuditor(model).audit)
+                )
+            )
+
+            # Keep check command strict by running modular checks by default.
+            import nginx_doctor.checks.laravel.laravel_auditor
+            import nginx_doctor.checks.ports.port_auditor
+            import nginx_doctor.checks.security.security_auditor
+            import nginx_doctor.checks.phpfpm.phpfpm_auditor
+            import nginx_doctor.checks.performance.performance_auditor
+
+            check_ctx = CheckContext(
+                model=model,
+                ssh=ssh,
+                laravel_enabled=True,
+                ports_enabled=True,
+                security_enabled=True,
+                phpfpm_enabled=True,
+                performance_enabled=True,
+            )
+            findings = deduplicate_findings(legacy_findings + run_checks(check_ctx))
             
             # Report everything
             reporter = ReportAction(console)
             reporter.report_server_summary(model, findings)
+            ws_inventory = wss_auditor.get_inventory()
+            if ws_inventory:
+                reporter.report_wss_inventory(ws_inventory)
             reporter.report_findings(findings)
             
             engine = DecisionEngine(model, findings)
@@ -373,12 +509,21 @@ def scan(ctx: click.Context, server: str, output_format: str | None) -> None:
 @main.command()
 @click.argument("server")
 @click.option("--format", "fmt", type=click.Choice(["rich", "plain", "json", "html"]), default=None, help="Output format")
-@click.option("--output", "-o", default="report.html", help="Output file for HTML report")
-@click.option("--laravel", is_flag=True, help="Enable Laravel readiness scanning")
-@click.option("--ports", is_flag=True, help="Enable port usage analyzer")
-@click.option("--security", is_flag=True, help="Enable security headers checks")
-@click.option("--phpfpm", is_flag=True, help="Enable PHP-FPM analysis")
-@click.option("--performance", is_flag=True, help="Enable performance audit")
+@click.option(
+    "--output",
+    "-o",
+    default=None,
+    help="Output file/directory for HTML report (default: reports/<host>/<dd-mm-yyyy>/report.html)",
+)
+@click.option("--waivers", type=click.Path(), default=None, help="YAML waiver file for accepted risks")
+@click.option("--history/--no-history", "enable_history", default=True, help="Track scan trends across runs")
+@click.option("--export-fix-pack", type=click.Path(), default=None, help="Export hardening.sh and nginx_patch.conf")
+@click.option("--minimal", is_flag=True, help="Run baseline analyzers only (disable optional modular checks)")
+@click.option("--laravel", is_flag=True, help="Enable Laravel readiness scanning (useful with --minimal)")
+@click.option("--ports", is_flag=True, help="Enable port usage analyzer (useful with --minimal)")
+@click.option("--security", is_flag=True, help="Enable security headers checks (useful with --minimal)")
+@click.option("--phpfpm", is_flag=True, help="Enable PHP-FPM analysis (useful with --minimal)")
+@click.option("--performance", is_flag=True, help="Enable performance audit (useful with --minimal)")
 @click.option("--all", "run_all", is_flag=True, help="Run all optional analyzers")
 @click.option("--score", is_flag=True, help="Show 0-100 summary scores")
 @click.option("--explain", is_flag=True, help="Show 'why this matters' for findings")
@@ -391,7 +536,11 @@ def diagnose(
     ctx: click.Context, 
     server: str, 
     fmt: str | None, 
-    output: str,
+    output: str | None,
+    waivers: str | None,
+    enable_history: bool,
+    export_fix_pack: str | None,
+    minimal: bool,
     laravel: bool,
     ports: bool,
     security: bool,
@@ -412,9 +561,12 @@ def diagnose(
     import sys
     cfg = _resolve_config(ctx, server)
     
-    # Auto-detect format if not specified
+    # Default to HTML reports unless terminal/interactivity-focused flags are requested.
     if fmt is None:
-        fmt = "plain" if not sys.stdout.isatty() else "rich"
+        if score or explain or fix or safe_fix:
+            fmt = "plain" if not sys.stdout.isatty() else "rich"
+        else:
+            fmt = "html"
 
     try:
         with SSHConnector(cfg) as ssh:
@@ -423,29 +575,48 @@ def diagnose(
             
             # Run analyzers
             dr_analyzer = NginxDoctorAnalyzer(model)
-            auditor = ServerAuditor(model)
-            
-            # Run WSS, Docker, and Node auditors
             from nginx_doctor.analyzer.wss_auditor import WSSAuditor
             from nginx_doctor.analyzer.docker_auditor import DockerAuditor
-            from nginx_doctor.analyzer.node_auditor import NodeAuditor
-            
-            wss_auditor = WSSAuditor(model)
-            docker_auditor = DockerAuditor(model)
             from nginx_doctor.analyzer.node_auditor import NodeAuditor
             from nginx_doctor.analyzer.systemd_auditor import SystemdAuditor
             from nginx_doctor.analyzer.redis_auditor import RedisAuditor
             from nginx_doctor.analyzer.worker_auditor import WorkerAuditor
-            
+            from nginx_doctor.analyzer.mysql_auditor import MySQLAuditor
+            from nginx_doctor.analyzer.firewall_auditor import FirewallAuditor
+            from nginx_doctor.analyzer.telemetry_auditor import TelemetryAuditor
+            from nginx_doctor.analyzer.security_baseline_auditor import SecurityBaselineAuditor
+            from nginx_doctor.analyzer.vulnerability_auditor import VulnerabilityAuditor
+            from nginx_doctor.analyzer.network_surface_auditor import NetworkSurfaceAuditor
+            from nginx_doctor.analyzer.path_conflict_auditor import PathConflictAuditor
+            from nginx_doctor.analyzer.runtime_drift_auditor import RuntimeDriftAuditor
+            from nginx_doctor.analyzer.certbot_auditor import CertbotAuditor
+
             wss_auditor = WSSAuditor(model)
-            docker_auditor = DockerAuditor(model)
-            node_auditor = NodeAuditor(model)
-            systemd_auditor = SystemdAuditor(model)
-            redis_auditor = RedisAuditor(model)
-            worker_auditor = WorkerAuditor(model)
-            
+            def _safe_audit(label: str, fn):
+                try:
+                    return fn()
+                except Exception as e:
+                    console.print(f"[dim]Skipping {label} audit due to model shape/runtime error: {e}[/]")
+                    return []
             legacy_findings = dr_analyzer.diagnose(
-                additional_findings=auditor.audit() + wss_auditor.audit() + docker_auditor.audit() + node_auditor.audit() + systemd_auditor.audit() + redis_auditor.audit() + worker_auditor.audit()
+                additional_findings=(
+                    ServerAuditor(model).audit()
+                    + _safe_audit("WSS", wss_auditor.audit)
+                    + _safe_audit("Docker", DockerAuditor(model).audit)
+                    + _safe_audit("Node", NodeAuditor(model).audit)
+                    + _safe_audit("Systemd", SystemdAuditor(model).audit)
+                    + _safe_audit("Redis", RedisAuditor(model).audit)
+                    + _safe_audit("Worker", WorkerAuditor(model).audit)
+                    + _safe_audit("MySQL", MySQLAuditor(model).audit)
+                    + _safe_audit("Firewall", FirewallAuditor(model).audit)
+                    + _safe_audit("Telemetry", TelemetryAuditor(model).audit)
+                    + _safe_audit("SecurityBaseline", SecurityBaselineAuditor(model).audit)
+                    + _safe_audit("Vulnerability", VulnerabilityAuditor(model).audit)
+                    + _safe_audit("NetworkSurface", NetworkSurfaceAuditor(model).audit)
+                    + _safe_audit("PathConflict", PathConflictAuditor(model).audit)
+                    + _safe_audit("RuntimeDrift", RuntimeDriftAuditor(model).audit)
+                    + _safe_audit("Certbot", CertbotAuditor(model).audit)
+                )
             )
             
             # Run new modular checks
@@ -455,15 +626,17 @@ def diagnose(
             import nginx_doctor.checks.security.security_auditor
             import nginx_doctor.checks.phpfpm.phpfpm_auditor
             import nginx_doctor.checks.performance.performance_auditor
+
+            default_modular_checks_enabled = not minimal
             
             check_ctx = CheckContext(
                 model=model,
                 ssh=ssh,
-                laravel_enabled=laravel or run_all,
-                ports_enabled=ports or run_all,
-                security_enabled=security or run_all,
-                phpfpm_enabled=phpfpm or run_all,
-                performance_enabled=performance or run_all,
+                laravel_enabled=default_modular_checks_enabled or laravel or run_all,
+                ports_enabled=default_modular_checks_enabled or ports or run_all,
+                security_enabled=default_modular_checks_enabled or security or run_all,
+                phpfpm_enabled=default_modular_checks_enabled or phpfpm or run_all,
+                performance_enabled=default_modular_checks_enabled or performance or run_all,
             )
             
             new_findings = run_checks(check_ctx)
@@ -472,27 +645,119 @@ def diagnose(
             from nginx_doctor.engine.deduplication import deduplicate_findings
             findings = deduplicate_findings(legacy_findings + new_findings)
             # print(f"DEBUG_CLI: findings length: {len(findings)}")
-            
+
+            # Apply waiver/suppression rules (accepted risks)
+            from nginx_doctor.engine.waivers import apply_waivers, default_waiver_path, load_waiver_rules
+            waiver_file = Path(waivers).expanduser() if waivers else default_waiver_path()
+            waiver_rules = load_waiver_rules(waiver_file)
+            findings, suppressed_findings = apply_waivers(findings, waiver_rules)
+            waiver_source = str(waiver_file) if waiver_rules else None
+            if suppressed_findings and fmt != "json":
+                console.print(
+                    f"[cyan]i Suppressed {len(suppressed_findings)} waived finding(s)"
+                    f"{f' from {waiver_source}' if waiver_source else ''}.[/]"
+                )
+
+            ws_inventory = wss_auditor.get_inventory()
+            from nginx_doctor.engine.topology import build_topology_snapshot
+            topology_snapshot = build_topology_snapshot(model, ws_inventory)
+
+            # Compute trend diff against previous scan and persist history.
+            trend = None
+            if enable_history:
+                from nginx_doctor.engine.history import ScanHistoryStore
+                from nginx_doctor.engine.scoring import ScoringEngine
+
+                tracker = ScanHistoryStore()
+                current_ts = model.scan_timestamp or datetime.datetime.now().isoformat()
+                score_total = ScoringEngine().calculate(findings).total
+                history_host = model.hostname if isinstance(getattr(model, "hostname", None), str) else server
+                trend = tracker.compute_trend(
+                    history_host,
+                    findings,
+                    score_total,
+                    current_ts,
+                    current_topology=topology_snapshot,
+                )
+                tracker.append_scan(
+                    history_host,
+                    findings,
+                    score_total,
+                    current_ts,
+                    topology=topology_snapshot,
+                )
+
+            # Optionally export generated fix-pack artifacts.
+            if export_fix_pack:
+                from nginx_doctor.actions.fix_pack import FixPackAction
+
+                fix_pack = FixPackAction().generate(findings, export_fix_pack)
+                console.print(f"[bold green]Fix pack exported:[/] {fix_pack['script']}")
+                console.print(f"[bold green]Nginx patch exported:[/] {fix_pack['patch']}")
+
             if fmt == "html":
                 html_reporter = HTMLReportAction()
-                ws_inventory = wss_auditor.get_inventory()
-                report_path = html_reporter.generate(model, findings, output_path=output, ws_inventory=ws_inventory)
+                html_output_path = _resolve_html_output_path(
+                    output=output,
+                    hostname=model.hostname or server,
+                    scan_timestamp=model.scan_timestamp,
+                )
+                html_output_path.parent.mkdir(parents=True, exist_ok=True)
+                report_path = html_reporter.generate(
+                    model,
+                    findings,
+                    output_path=str(html_output_path),
+                    ws_inventory=ws_inventory,
+                    trend=trend,
+                    suppressed_findings=suppressed_findings,
+                    waiver_source=waiver_source,
+                )
+                bundle = ReportBundleAction().export(
+                    bundle_dir=html_output_path.parent,
+                    model=model,
+                    findings=findings,
+                    trend=trend,
+                    topology_snapshot=topology_snapshot,
+                    suppressed_findings=suppressed_findings,
+                    html_report_path=report_path,
+                )
                 console.print(f"\n[bold green]Report generated:[/] {report_path}")
-                sys.exit(0)
-
-            # Report with selected format
-            reporter = ReportAction(console, format_mode=fmt, show_score=score, show_explain=explain)
-            
-            # Only show summary table in rich/plain mode (not json)
-            if fmt != "json":
-                reporter.report_server_summary(model)
-            
-            # Show WSS inventory if any WebSocket locations detected
-            ws_inventory = wss_auditor.get_inventory()
-            if ws_inventory:
-                reporter.report_wss_inventory(ws_inventory)
-            
-            exit_code = reporter.report_findings(findings)
+                console.print(f"[bold green]Bundle directory:[/] {html_output_path.parent.resolve()}")
+                console.print(f"[dim]Artifacts:[/] {Path(bundle['summary']).name}, {Path(bundle['model']).name}, {Path(bundle['findings']).name}")
+                if "trend" in bundle:
+                    console.print(f"[dim]-[/] {Path(bundle['trend']).name}")
+                if "topology" in bundle:
+                    console.print(f"[dim]-[/] {Path(bundle['topology']).name}")
+                if "waived_findings" in bundle:
+                    console.print(f"[dim]-[/] {Path(bundle['waived_findings']).name}")
+                if "certbot_systemctl_status" in bundle:
+                    console.print(f"[dim]-[/] {Path(bundle['certbot_systemctl_status']).name}")
+                if "certbot_renew_dry_run" in bundle:
+                    console.print(f"[dim]-[/] {Path(bundle['certbot_renew_dry_run']).name}")
+                if "certbot_journal" in bundle:
+                    console.print(f"[dim]-[/] {Path(bundle['certbot_journal']).name}")
+                if "certbot_systemctl_cat" in bundle:
+                    console.print(f"[dim]-[/] {Path(bundle['certbot_systemctl_cat']).name}")
+                if "certbot_certificates" in bundle:
+                    console.print(f"[dim]-[/] {Path(bundle['certbot_certificates']).name}")
+                if "certbot_renewal_ls" in bundle:
+                    console.print(f"[dim]-[/] {Path(bundle['certbot_renewal_ls']).name}")
+                exit_code = 1 if any(
+                    f.severity.value in ("CRITICAL", "WARNING") for f in findings
+                ) else 0
+            else:
+                # Report with selected format
+                reporter = ReportAction(console, format_mode=fmt, show_score=score, show_explain=explain)
+                
+                # Only show summary table in rich/plain mode (not json)
+                if fmt != "json":
+                    reporter.report_server_summary(model)
+                
+                # Show WSS inventory if any WebSocket locations detected
+                if ws_inventory:
+                    reporter.report_wss_inventory(ws_inventory)
+                
+                exit_code = reporter.report_findings(findings)
             
             # Store in context in case user wants to pipe to recommend
             ctx.obj['findings'] = findings
@@ -546,7 +811,7 @@ def discover(ctx: click.Context, server: str, base: str, fmt: str | None, output
     cfg = _resolve_config(ctx, server)
     
     if fmt is None:
-        fmt = "plain" if not sys.stdout.isatty() else "rich"
+        fmt = "html"
         
     # Import needed classes locally to avoid circular dependencies if any
     from nginx_doctor.scanner.filesystem import FilesystemScanner
@@ -810,6 +1075,35 @@ def config_remove(ctx: click.Context, name: str) -> None:
         console.print(f"[bold green]✓ Removed profile:[/] {name}")
     else:
         console.print(f"[bold red]Error:[/] Profile {name} not found.")
+
+
+@main.command()
+@click.option("--port", default=8765, help="Port to listen on (default: 8765)")
+@click.option("--host", default="127.0.0.1", hidden=True, help="Bind address (locked to 127.0.0.1)")
+def web(port: int, host: str) -> None:
+    """Start the Project Setup Wizard web UI.
+    
+    Runs a local web server for configuring Nginx projects via SSH.
+    
+    Example:
+        nginx-doctor web --port 8765
+    
+    Then open: http://127.0.0.1:8765/wizard
+    """
+    console.print("[bold cyan]🚀 nginx-doctor Project Setup Wizard[/]")
+    console.print()
+    
+    # Security: Force localhost binding
+    if host != "127.0.0.1":
+        console.print("[yellow]⚠️  Security: Forcing bind to 127.0.0.1 (localhost only)[/]")
+        host = "127.0.0.1"
+    
+    console.print(f"[bold]Starting server at:[/] http://{host}:{port}/wizard")
+    console.print("[dim]Press Ctrl+C to stop[/]")
+    console.print()
+    
+    from nginx_doctor.web.app import run_server
+    run_server(host=host, port=port)
 
 
 if __name__ == "__main__":

@@ -1,5 +1,7 @@
 """Deduplication and Ranking Engine for Findings."""
 
+import re
+
 from nginx_doctor.model.evidence import Severity
 from nginx_doctor.model.finding import Finding
 
@@ -78,12 +80,28 @@ def deduplicate_findings(findings: list[Finding]) -> list[Finding]:
             seen_keys[key] = f
             deduped.append(f)
     
-    # 2. Instance counters for unique IDs (e.g., NGX002-1, NGX002-2)
+    # 2. Instance counters with deterministic/stable ordering across scans.
+    # Preserve explicit IDs like CERTBOT-4 / SYSTEMD-1 and suffix only collisions.
+    numbering_order = sorted(deduped, key=_finding_signature)
+
+    explicit_id_total: dict[str, int] = {}
+    for f in numbering_order:
+        if _has_explicit_numeric_suffix(f.id):
+            explicit_id_total[f.id] = explicit_id_total.get(f.id, 0) + 1
+
+    explicit_id_seen: dict[str, int] = {}
     instance_counters: dict[str, int] = {}
-    for f in deduped:
-        rule_prefix = f.id.split("-")[0] # Strip existing -N if any
-        instance_counters[rule_prefix] = instance_counters.get(rule_prefix, 0) + 1
-        f.id = f"{rule_prefix}-{instance_counters[rule_prefix]}"
+    for f in numbering_order:
+        if _has_explicit_numeric_suffix(f.id):
+            # Keep first instance of explicit ID untouched, suffix subsequent ones.
+            total = explicit_id_total.get(f.id, 1)
+            if total > 1:
+                explicit_id_seen[f.id] = explicit_id_seen.get(f.id, 0) + 1
+                if explicit_id_seen[f.id] > 1:
+                    f.id = f"{f.id}.{explicit_id_seen[f.id]}"
+            continue
+        instance_counters[f.id] = instance_counters.get(f.id, 0) + 1
+        f.id = f"{f.id}-{instance_counters[f.id]}"
     
     # 3. ROOT CAUSE CHAINING: 
     # Link side-effects to primary causes (e.g., Backup files -> Duplicate server_name)
@@ -120,3 +138,30 @@ def _apply_root_cause_linking(findings: list[Finding]) -> None:
                     f.severity = Severity.INFO
                     f.cause = f"{f.cause}. This is likely a side-effect of backup files being enabled (NGX001)."
                     f.treatment = "Resolve parent finding NGX001 first."
+
+
+def _has_explicit_numeric_suffix(finding_id: str) -> bool:
+    """Return True when the finding id already ends with '-<number>'."""
+    return bool(re.fullmatch(r".+-\d+(?:\.\d+)?", finding_id))
+
+
+def _finding_signature(finding: Finding) -> tuple[str, str, str, int, str]:
+    """Deterministic sort key used for stable ID suffix assignment."""
+    severity_rank = {
+        Severity.CRITICAL: 0,
+        Severity.WARNING: 1,
+        Severity.INFO: 2,
+    }.get(finding.severity, 3)
+    if finding.evidence:
+        ev = sorted(
+            finding.evidence,
+            key=lambda item: (item.source_file, item.line_number, item.excerpt),
+        )[0]
+        source_file = ev.source_file
+        line_number = ev.line_number
+        excerpt = ev.excerpt
+    else:
+        source_file = ""
+        line_number = 0
+        excerpt = ""
+    return (finding.id, str(severity_rank), finding.condition, source_file, line_number, excerpt)

@@ -21,6 +21,7 @@ class SSHConfig:
     user: str = "root"
     port: int = 22
     key_path: str | None = None
+    passphrase: str | None = None  # For encrypted private keys
     password: str | None = None  # Fallback, prefer keys
     use_sudo: bool = True
     timeout: int = 30
@@ -76,8 +77,16 @@ class SSHConnector:
             key_path = Path(self.config.key_path).expanduser()
             if key_path.exists():
                 connect_kwargs["key_filename"] = str(key_path)
+                if self.config.passphrase:
+                    connect_kwargs["passphrase"] = self.config.passphrase
+                # If we have a specific key, don't look for others
+                connect_kwargs["look_for_keys"] = False
+                connect_kwargs["allow_agent"] = False
         elif self.config.password:
             connect_kwargs["password"] = self.config.password
+            # If we have a password, don't look for keys (prevents encrypted key errors)
+            connect_kwargs["look_for_keys"] = False
+            connect_kwargs["allow_agent"] = False
 
         try:
             self._client.connect(**connect_kwargs)
