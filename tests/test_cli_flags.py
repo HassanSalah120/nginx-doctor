@@ -40,8 +40,14 @@ def test_score_flag():
          patch("nginx_doctor.checks.run_checks") as mock_run, \
          patch("nginx_doctor.cli.ReportAction") as MockReporter:
         
+        from nginx_doctor.model.server import ServerModel, NginxInfo, PHPInfo, ServiceStatus, CapabilityLevel
         mock_resolve.return_value = MagicMock()
-        mock_scan.return_value = MagicMock()
+        mock_scan.return_value = ServerModel(
+            hostname="test", 
+            nginx=NginxInfo(version="1.24.0", config_path="/etc/nginx/nginx.conf"), 
+            php=PHPInfo(versions=[]), 
+            nginx_status=ServiceStatus(capability=CapabilityLevel.FULL)
+        )
         mock_dr.return_value.diagnose.return_value = []
         mock_auditor.return_value.audit.return_value = []
         mock_wss.return_value.audit.return_value = []
@@ -50,7 +56,7 @@ def test_score_flag():
             mocked.return_value.audit.return_value = []
         mock_run.return_value = []
         
-        result = runner.invoke(diagnose, ["myserver", "--score"])
+        result = runner.invoke(diagnose, ["myserver", "--score", "--format", "rich"])
         
         assert result.exit_code == 0
         assert MockReporter.called
@@ -81,8 +87,14 @@ def test_explain_flag():
          patch("nginx_doctor.checks.run_checks") as mock_run, \
          patch("nginx_doctor.cli.ReportAction") as MockReporter:
         
+        from nginx_doctor.model.server import ServerModel, NginxInfo, PHPInfo, ServiceStatus, CapabilityLevel
         mock_resolve.return_value = MagicMock()
-        mock_scan.return_value = MagicMock()
+        mock_scan.return_value = ServerModel(
+            hostname="test", 
+            nginx=NginxInfo(version="1.24.0", config_path="/etc/nginx/nginx.conf"), 
+            php=PHPInfo(versions=[]), 
+            nginx_status=ServiceStatus(capability=CapabilityLevel.FULL)
+        )
         mock_dr.return_value.diagnose.return_value = []
         mock_auditor.return_value.audit.return_value = []
         mock_wss.return_value.audit.return_value = []
@@ -91,7 +103,7 @@ def test_explain_flag():
             mocked.return_value.audit.return_value = []
         mock_run.return_value = []
         
-        result = runner.invoke(diagnose, ["myserver", "--explain"])
+        result = runner.invoke(diagnose, ["myserver", "--explain", "--format", "rich"])
         
         assert result.exit_code == 0
         assert MockReporter.called
@@ -123,8 +135,14 @@ def test_safe_fix_trigger():
          patch("nginx_doctor.cli.ReportAction") as mock_report, \
          patch("nginx_doctor.cli.SafeFixAction") as MockFixer:
         
+        from nginx_doctor.model.server import ServerModel, NginxInfo, PHPInfo, ServiceStatus, CapabilityLevel
         mock_resolve.return_value = MagicMock()
-        mock_scan.return_value = MagicMock()
+        mock_scan.return_value = ServerModel(
+            hostname="test", 
+            nginx=NginxInfo(version="1.24.0", config_path="/etc/nginx/nginx.conf"), 
+            php=PHPInfo(versions=[]), 
+            nginx_status=ServiceStatus(capability=CapabilityLevel.FULL)
+        )
         mock_dr.return_value.diagnose.return_value = []
         mock_auditor.return_value.audit.return_value = []
         mock_wss.return_value.audit.return_value = []
@@ -143,7 +161,7 @@ def test_safe_fix_trigger():
         
         MockFixer.return_value.run.return_value = []
         
-        result = runner.invoke(diagnose, ["myserver", "--safe-fix", "--dry-run"], obj={}, catch_exceptions=False)
+        result = runner.invoke(diagnose, ["myserver", "--safe-fix", "--dry-run", "--format", "rich"], obj={})
         
         assert result.exit_code == 0
         MockFixer.assert_called()

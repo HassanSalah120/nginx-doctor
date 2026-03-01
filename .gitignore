@@ -28,3 +28,7 @@ Project.md
 *.txt
 /reports
 /fix-pack
+/src/data/
+*.db
+*.db-wal
+*.db-shm

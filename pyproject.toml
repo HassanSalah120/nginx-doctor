@@ -5,7 +5,7 @@ build-backend = "hatchling.build"
 [project]
 name = "nginx-doctor"
 version = "0.1.0"
-description = "SSH-based Server Intelligence System for Nginx + PHP Applications"
+description = "AI-Driven Infrastructure Diagnosis System for Nginx + PHP Applications"
 readme = "README.md"
 license = "MIT"
 requires-python = ">=3.10"

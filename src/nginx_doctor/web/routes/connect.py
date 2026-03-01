@@ -53,13 +53,6 @@ async def connect(request: ConnectRequest) -> ConnectResponse:
     
     Returns a host_id (session token) for subsequent API calls.
     """
-    # Validate auth method provided
-    if not request.key_path and not request.password:
-        raise HTTPException(
-            status_code=400,
-            detail="Either key_path or password must be provided"
-        )
-    
     config = SSHConfig(
         host=request.host,
         user=request.username,

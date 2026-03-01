@@ -16,8 +16,15 @@ def build_topology_snapshot(model: ServerModel, ws_inventory: list | None = None
     public_bindings = _build_public_bindings(model)
     ws_routes = _build_ws_routes(ws_inventory)
 
+    os_model = getattr(model, "os", None)
+    os_info_str = os_model.full_name if os_model else "unknown"
+    nginx_model = getattr(model, "nginx", None)
+    nginx_version = getattr(nginx_model, "version", "unknown") if nginx_model else "unknown"
+
     payload: dict[str, Any] = {
         "host": _as_text(getattr(model, "hostname", "")),
+        "os_info": os_info_str,
+        "nginx_version": nginx_version,
         "mode": _as_text(getattr(getattr(model, "nginx", None), "mode", "unknown")) or "unknown",
         "domains": sorted({r["domain"] for r in routes if r.get("domain")}),
         "routes": routes,

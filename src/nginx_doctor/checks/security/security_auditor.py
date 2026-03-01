@@ -108,9 +108,9 @@ class SecurityAuditor(BaseCheck):
                     id="SEC-HEAD-1",
                     severity=Severity.WARNING,
                     confidence=0.9,
-                    condition=f"Missing security headers in location '{location.path}'",
+                    condition="Missing security headers",
                     cause=(
-                        f"The following headers are missing: {', '.join(missing)}. "
+                        f"Location '{location.path}' is missing: {', '.join(missing)}. "
                         "Note: Nginx 'add_header' in a child block clears all parent headers."
                     ),
                     evidence=[Evidence(
@@ -166,8 +166,8 @@ class SecurityAuditor(BaseCheck):
                     id="NGX-SEC-2",
                     severity=Severity.WARNING,
                     confidence=1.0,
-                    condition=f"Directory listing (autoindex) enabled on {server.server_names}",
-                    cause="The 'autoindex on;' directive is present in the server block.",
+                    condition="Directory listing (autoindex) enabled",
+                    cause=f"The 'autoindex on;' directive is present in the server block for {server.server_names}.",
                     evidence=[Evidence(
                         source_file=server.source_file,
                         line_number=server.line_number,
@@ -211,8 +211,8 @@ class SecurityAuditor(BaseCheck):
                     id="NGX-SEC-3",
                     severity=severity,
                     confidence=0.85,
-                    condition=f"Server {server.server_names} missing dotfile protection",
-                    cause=f"No location block detected targeting dotfiles (e.g., location ~ /\\.). {risk_line}",
+                    condition="Missing dotfile protection",
+                    cause=f"Server {server.server_names} has no location block targeting dotfiles. {risk_line}",
                     evidence=[Evidence(
                         source_file=server.source_file,
                         line_number=server.line_number,
@@ -262,7 +262,7 @@ class SecurityAuditor(BaseCheck):
                     id="NGX-SEC-4",
                     severity=Severity.CRITICAL,
                     confidence=0.95,
-                    condition=f"PHP execution enabled in uploads directory: {location.path}",
+                    condition="PHP execution enabled in uploads directory",
                     cause=f"Location '{location.path}' contains fastcgi_pass directive.",
                     evidence=[Evidence(
                         source_file=info.config_path, 

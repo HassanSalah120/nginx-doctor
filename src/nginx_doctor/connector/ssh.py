@@ -10,7 +10,7 @@ from pathlib import Path
 from typing import Callable
 
 import paramiko
-from paramiko.ssh_exception import AuthenticationException, SSHException
+from paramiko.ssh_exception import AuthenticationException, PasswordRequiredException, SSHException
 
 
 @dataclass
@@ -84,12 +84,17 @@ class SSHConnector:
                 connect_kwargs["allow_agent"] = False
         elif self.config.password:
             connect_kwargs["password"] = self.config.password
-            # If we have a password, don't look for keys (prevents encrypted key errors)
-            connect_kwargs["look_for_keys"] = False
-            connect_kwargs["allow_agent"] = False
+            # Important: do NOT disable key/agent discovery when a password is present.
+            # Many servers accept key auth only, and UIs sometimes capture a password even
+            # when the real auth path is ssh-agent or default ~/.ssh keys.
 
         try:
             self._client.connect(**connect_kwargs)
+        except PasswordRequiredException as e:
+            raise ConnectionError(
+                "Authentication failed: encrypted private key requires a passphrase ("
+                "provide passphrase or use ssh-agent)"
+            ) from e
         except AuthenticationException as e:
             raise ConnectionError(f"Authentication failed: {e}") from e
         except SSHException as e:
