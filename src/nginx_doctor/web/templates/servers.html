@@ -1,0 +1,279 @@
+{% extends "base.html" %}
+{% block title %}Servers{% endblock %}
+
+{% block content %}
+<div class="page-header">
+    <h1>🖥️ Servers</h1>
+    <p>Manage registered servers and launch scans</p>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <div class="card-title">Add Server</div>
+    </div>
+    <form id="add-server-form">
+        <div class="form-row">
+            <div class="form-group">
+                <label for="name">Display Name</label>
+                <input type="text" id="name" class="form-control" placeholder="Production Web" required>
+            </div>
+            <div class="form-group">
+                <label for="host">Host / IP</label>
+                <input type="text" id="host" class="form-control" placeholder="192.168.1.10" required>
+            </div>
+            <div class="form-group">
+                <label for="port">SSH Port</label>
+                <input type="number" id="port" class="form-control" value="22">
+            </div>
+            <div class="form-group">
+                <label for="username">Username</label>
+                <input type="text" id="username" class="form-control" value="root">
+            </div>
+        </div>
+        <div class="form-row">
+            <div class="form-group">
+                <label for="password">Password (optional)</label>
+                <input type="password" id="password" class="form-control" placeholder="SSH password">
+            </div>
+            <div class="form-group">
+                <label for="key_path">Key Path (optional)</label>
+                <input type="text" id="key_path" class="form-control" placeholder="~/.ssh/id_rsa">
+            </div>
+            <div class="form-group">
+                <label for="tags">Tags (optional)</label>
+                <input type="text" id="tags" class="form-control" placeholder="production, web">
+            </div>
+            <div class="form-group" style="display:flex;align-items:flex-end">
+                <button type="submit" class="btn btn-primary">+ Add Server</button>
+            </div>
+        </div>
+    </form>
+    <div id="form-message" class="mt-1" style="display:none"></div>
+</div>
+
+<div class="card">
+    <div class="card-header">
+        <div class="card-title">Registered Servers</div>
+    </div>
+    <div class="table-wrap">
+        <table>
+            <thead>
+                <tr>
+                    <th>ID</th>
+                    <th>Name</th>
+                    <th>Host</th>
+                    <th>Port</th>
+                    <th>Auth</th>
+                    <th>Tags</th>
+                    <th>Actions</th>
+                </tr>
+            </thead>
+            <tbody id="servers-tbody">
+                <tr><td colspan="7" class="text-muted" style="text-align:center">Loading...</td></tr>
+            </tbody>
+        </table>
+    </div>
+</div>
+{% endblock %}
+
+{% block scripts %}
+<script>
+async function loadServers() {
+    const res = await fetch('/api/servers');
+    const data = await res.json();
+    const tbody = document.getElementById('servers-tbody');
+
+    if (!data.servers || data.servers.length === 0) {
+        tbody.innerHTML = '<tr><td colspan="7"><div class="empty-state"><h3>No servers registered</h3><p>Add a server above to get started</p></div></td></tr>';
+        return;
+    }
+
+    tbody.innerHTML = data.servers.map(s => `
+        <tr>
+            <td class="text-muted">#${s.id}</td>
+            <td><strong>${s.name}</strong></td>
+            <td>${s.host}</td>
+            <td>${s.port}</td>
+            <td>
+                <div class="auth-badge ${s.password ? 'auth-password' : s.key_path ? 'auth-key' : 'auth-agent'}">${s.password ? '🔒 Password' : s.key_path ? '🔑 Key' : '🤖 Agent'}</div>
+            </td>
+            <td class="text-muted">${s.tags || '—'}</td>
+            <td>
+                <button class="btn btn-sm btn-primary" onclick="runScan(${s.id})">▶ Scan</button>
+                <button class="btn btn-sm btn-secondary" onclick="editServer(${s.id}, '${s.name.replace(/'/g,"\\'")}', '${s.host}', ${s.port}, '${s.username}', '${(s.key_path||'').replace(/'/g,"\\'")}', '${(s.tags||'').replace(/'/g,"\\'")}', ${s.password ? 'true' : 'false'})">✎ Edit</button>
+                <button class="btn btn-sm btn-danger" onclick="deleteServer(${s.id})">✕</button>
+            </td>
+        </tr>
+    `).join('');
+}
+
+async function runScan(serverId) {
+    try {
+        const res = await fetch('/api/scan', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({ server_id: serverId }),
+        });
+        const data = await res.json();
+        if (res.ok) {
+            window.location.href = `/jobs/${data.job_id}`;
+        } else {
+            alert(data.detail || 'Failed to start scan');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+
+document.getElementById('add-server-form').addEventListener('submit', async (e) => {
+    e.preventDefault();
+    const msg = document.getElementById('form-message');
+
+    const body = {
+        name: document.getElementById('name').value,
+        host: document.getElementById('host').value,
+        port: parseInt(document.getElementById('port').value) || 22,
+        username: document.getElementById('username').value || 'root',
+        password: document.getElementById('password').value || null,
+        key_path: document.getElementById('key_path').value || null,
+        tags: document.getElementById('tags').value || '',
+    };
+
+    try {
+        const res = await fetch('/api/servers', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (res.ok) {
+            msg.style.display = 'block';
+            msg.className = 'mt-1 text-success';
+            msg.textContent = `✓ Server "${body.name}" added successfully`;
+            e.target.reset();
+            document.getElementById('port').value = '22';
+            document.getElementById('username').value = 'root';
+            loadServers();
+        } else {
+            msg.style.display = 'block';
+            msg.className = 'mt-1 text-danger';
+            msg.textContent = '✗ ' + (data.detail || 'Failed to add server');
+        }
+    } catch (err) {
+        msg.style.display = 'block';
+        msg.className = 'mt-1 text-danger';
+        msg.textContent = '✗ Error: ' + err.message;
+    }
+});
+
+loadServers();
+
+let editingServerId = null;
+
+function editServer(id, name, host, port, username, keyPath, tags, hasPassword) {
+    editingServerId = id;
+    document.getElementById('edit-name').value = name;
+    document.getElementById('edit-host').value = host;
+    document.getElementById('edit-port').value = port;
+    document.getElementById('edit-username').value = username;
+    document.getElementById('edit-key_path').value = keyPath || '';
+    document.getElementById('edit-tags').value = tags || '';
+    document.getElementById('edit-password').value = '';
+    document.getElementById('clear-password-wrap').style.display = hasPassword ? 'flex' : 'none';
+    document.getElementById('edit-modal').style.display = 'block';
+}
+
+function closeEditModal() {
+    document.getElementById('edit-modal').style.display = 'none';
+    editingServerId = null;
+}
+
+async function saveEdit() {
+    const msg = document.getElementById('edit-message');
+    const clearPassword = document.getElementById('clear-password').checked;
+    const newPassword = document.getElementById('edit-password').value;
+    
+    const body = {};
+    if (clearPassword) {
+        body.password = null;
+    } else if (newPassword) {
+        body.password = newPassword;
+    }
+    
+    const keyPath = document.getElementById('edit-key_path').value;
+    if (keyPath || keyPath === '') {
+        body.key_path = keyPath || null;
+    }
+    
+    try {
+        const res = await fetch(`/api/servers/${editingServerId}`, {
+            method: 'PUT',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(body),
+        });
+        const data = await res.json();
+        if (res.ok) {
+            msg.style.display = 'block';
+            msg.className = 'mt-1 text-success';
+            msg.textContent = '✓ Server updated successfully';
+            setTimeout(() => {
+                closeEditModal();
+                loadServers();
+            }, 800);
+        } else {
+            msg.style.display = 'block';
+            msg.className = 'mt-1 text-danger';
+            msg.textContent = '✗ ' + (data.detail || 'Failed to update server');
+        }
+    } catch (err) {
+        msg.style.display = 'block';
+        msg.className = 'mt-1 text-danger';
+        msg.textContent = '✗ Error: ' + err.message;
+    }
+}
+
+async function deleteServer(id) {
+    if (!confirm('Are you sure you want to delete this server?')) return;
+    try {
+        const res = await fetch(`/api/servers/${id}`, { method: 'DELETE' });
+        if (res.ok) {
+            loadServers();
+        } else {
+            alert('Failed to delete server');
+        }
+    } catch (e) {
+        alert('Error: ' + e.message);
+    }
+}
+</script>
+
+<div id="edit-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
+    <div style="background:white;padding:2rem;border-radius:8px;max-width:500px;width:90%;max-height:90vh;overflow:auto;">
+        <h3>Edit Server Credentials</h3>
+        <div class="form-group">
+            <label>Password</label>
+            <input type="password" id="edit-password" class="form-control" placeholder="Leave empty to keep unchanged">
+        </div>
+        <div id="clear-password-wrap" class="form-group" style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
+            <input type="checkbox" id="clear-password">
+            <label for="clear-password" style="margin:0;font-weight:normal;">Clear stored password (use SSH agent/keys)</label>
+        </div>
+        <div class="form-group">
+            <label>Key Path</label>
+            <input type="text" id="edit-key_path" class="form-control" placeholder="~/.ssh/id_rsa">
+        </div>
+        <div id="edit-message" style="display:none"></div>
+        <div style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:1rem;">
+            <button class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
+            <button class="btn btn-primary" onclick="saveEdit()">Save Changes</button>
+        </div>
+    </div>
+</div>
+
+<style>
+.auth-badge { display:inline-block;padding:0.25rem 0.5rem;border-radius:4px;font-size:0.75rem;font-weight:600; }
+.auth-password { background:#fee2e2;color:#991b1b; }
+.auth-key { background:#dbeafe;color:#1e40af; }
+.auth-agent { background:#dcfce7;color:#166534; }
+</style>
+{% endblock %}
