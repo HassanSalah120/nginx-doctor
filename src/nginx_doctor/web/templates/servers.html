@@ -129,15 +129,18 @@ document.getElementById('add-server-form').addEventListener('submit', async (e) 
     e.preventDefault();
     const msg = document.getElementById('form-message');
 
+    const passwordValue = document.getElementById('password').value;
     const body = {
         name: document.getElementById('name').value,
         host: document.getElementById('host').value,
         port: parseInt(document.getElementById('port').value) || 22,
         username: document.getElementById('username').value || 'root',
-        password: document.getElementById('password').value || null,
+        password: passwordValue || null,
         key_path: document.getElementById('key_path').value || null,
         tags: document.getElementById('tags').value || '',
     };
+    
+    console.log('Creating server with auth:', passwordValue ? 'password set' : 'no password', body.key_path ? 'key_path set' : 'no key');
 
     try {
         const res = await fetch('/api/servers', {
@@ -190,17 +193,26 @@ async function saveEdit() {
     const clearPassword = document.getElementById('clear-password').checked;
     const newPassword = document.getElementById('edit-password').value;
     
+    console.log('Saving edit - clearPassword:', clearPassword, 'newPassword:', newPassword ? 'provided' : 'empty');
+    
     const body = {};
     if (clearPassword) {
         body.password = null;
+        console.log('Will CLEAR password');
     } else if (newPassword) {
         body.password = newPassword;
+        console.log('Will UPDATE password');
+    } else {
+        console.log('Password unchanged');
     }
     
     const keyPath = document.getElementById('edit-key_path').value;
     if (keyPath || keyPath === '') {
         body.key_path = keyPath || null;
+        console.log('Key path:', keyPath || 'cleared');
     }
+    
+    console.log('Sending PUT with body keys:', Object.keys(body));
     
     try {
         const res = await fetch(`/api/servers/${editingServerId}`, {
