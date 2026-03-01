@@ -172,15 +172,12 @@ let editingServerId = null;
 
 function editServer(id, name, host, port, username, keyPath, tags, hasPassword) {
     editingServerId = id;
-    document.getElementById('edit-name').value = name;
-    document.getElementById('edit-host').value = host;
-    document.getElementById('edit-port').value = port;
-    document.getElementById('edit-username').value = username;
+    document.getElementById('edit-server-title').textContent = `Edit: ${name}`;
     document.getElementById('edit-key_path').value = keyPath || '';
-    document.getElementById('edit-tags').value = tags || '';
     document.getElementById('edit-password').value = '';
+    document.getElementById('clear-password').checked = false;
     document.getElementById('clear-password-wrap').style.display = hasPassword ? 'flex' : 'none';
-    document.getElementById('edit-modal').style.display = 'block';
+    document.getElementById('edit-modal').style.display = 'flex';
 }
 
 function closeEditModal() {
@@ -249,10 +246,10 @@ async function deleteServer(id) {
 
 <div id="edit-modal" style="display:none;position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:1000;align-items:center;justify-content:center;">
     <div style="background:white;padding:2rem;border-radius:8px;max-width:500px;width:90%;max-height:90vh;overflow:auto;">
-        <h3>Edit Server Credentials</h3>
+        <h3 id="edit-server-title">Edit Server</h3>
         <div class="form-group">
-            <label>Password</label>
-            <input type="password" id="edit-password" class="form-control" placeholder="Leave empty to keep unchanged">
+            <label>Password (leave empty to keep unchanged)</label>
+            <input type="password" id="edit-password" class="form-control" placeholder="Enter new password">
         </div>
         <div id="clear-password-wrap" class="form-group" style="display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem;">
             <input type="checkbox" id="clear-password">
@@ -260,9 +257,9 @@ async function deleteServer(id) {
         </div>
         <div class="form-group">
             <label>Key Path</label>
-            <input type="text" id="edit-key_path" class="form-control" placeholder="~/.ssh/id_rsa">
+            <input type="text" id="edit-key_path" class="form-control" placeholder="~/.ssh/id_rsa (leave empty to clear)">
         </div>
-        <div id="edit-message" style="display:none"></div>
+        <div id="edit-message" style="display:none;margin-top:0.5rem;"></div>
         <div style="display:flex;gap:0.5rem;justify-content:flex-end;margin-top:1rem;">
             <button class="btn btn-secondary" onclick="closeEditModal()">Cancel</button>
             <button class="btn btn-primary" onclick="saveEdit()">Save Changes</button>
