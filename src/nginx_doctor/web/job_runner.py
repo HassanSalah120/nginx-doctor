@@ -101,6 +101,13 @@ class ScanJobRunner:
                 job_id, f"Connecting to {server.host}:{server.port}..."
             )
 
+            auth_mode = "agent/default keys"
+            if server.key_path:
+                auth_mode = "key_path"
+            elif server.password:
+                auth_mode = "password"
+            self._log_repo.append(job_id, f"SSH auth mode: {auth_mode}")
+
             # Build SSH config
             ssh_config = SSHConfig(
                 host=server.host,

@@ -29,6 +29,18 @@ class CreateServerRequest(BaseModel):
     tags: str = Field("", description="Comma-separated tags")
 
 
+class UpdateServerRequest(BaseModel):
+    """Request body for updating a server."""
+
+    name: Optional[str] = Field(None, description="Display name for the server")
+    host: Optional[str] = Field(None, description="Server hostname or IP")
+    port: Optional[int] = Field(None, description="SSH port")
+    username: Optional[str] = Field(None, description="SSH username")
+    password: Optional[str] = Field(None, description="SSH password (set null to clear)")
+    key_path: Optional[str] = Field(None, description="Path to SSH private key (set null to clear)")
+    tags: Optional[str] = Field(None, description="Comma-separated tags")
+
+
 @router.post("/servers")
 async def create_server(request: CreateServerRequest) -> dict:
     """Register a new server."""
@@ -61,3 +73,45 @@ async def get_server(server_id: int) -> dict:
     if not server:
         raise HTTPException(status_code=404, detail="Server not found")
     return {"server": server.to_dict()}
+
+
+@router.put("/servers/{server_id}")
+async def update_server(server_id: int, request: UpdateServerRequest) -> dict:
+    """Update an existing server."""
+    server = _repo.get_by_id(server_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    fields_set = getattr(request, "model_fields_set", None)
+    if fields_set is None:
+        fields_set = getattr(request, "__fields_set__", set())
+
+    update_kwargs: dict = {
+        "name": request.name,
+        "host": request.host,
+        "port": request.port,
+        "username": request.username,
+        "tags": request.tags,
+    }
+    if "password" in fields_set:
+        update_kwargs["password"] = request.password
+    if "key_path" in fields_set:
+        update_kwargs["key_path"] = request.key_path
+
+    updated = _repo.update(server_id, **update_kwargs)
+    if not updated:
+        raise HTTPException(status_code=400, detail="No fields updated")
+
+    fresh = _repo.get_by_id(server_id)
+    if not fresh:
+        raise HTTPException(status_code=500, detail="Failed to load updated server")
+    return {"server": fresh.to_dict()}
+
+
+@router.delete("/servers/{server_id}")
+async def delete_server(server_id: int) -> dict:
+    """Delete a server."""
+    deleted = _repo.delete(server_id)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="Server not found")
+    return {"deleted": True}

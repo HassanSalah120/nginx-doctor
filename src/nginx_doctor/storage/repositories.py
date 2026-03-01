@@ -18,6 +18,9 @@ from nginx_doctor.storage.models import (
 )
 
 
+_UNSET = object()
+
+
 class ServerRepository:
     """CRUD operations for the servers table."""
 
@@ -61,6 +64,61 @@ class ServerRepository:
         """Delete a server by ID. Returns True if a row was deleted."""
         db = get_db()
         cursor = db.execute("DELETE FROM servers WHERE id = ?", (server_id,))
+        db.commit()
+        return cursor.rowcount > 0
+
+    def update(
+        self,
+        server_id: int,
+        *,
+        name: str | None = None,
+        host: str | None = None,
+        port: int | None = None,
+        username: str | None = None,
+        password: Any = _UNSET,
+        key_path: Any = _UNSET,
+        tags: str | None = None,
+    ) -> bool:
+        """Update a server record. Returns True if a row was updated.
+
+        Notes:
+            - Passing password=None will clear the stored password.
+            - Passing key_path=None will clear the stored key path.
+        """
+        db = get_db()
+        updates: list[str] = []
+        params: list[Any] = []
+
+        if name is not None:
+            updates.append("name = ?")
+            params.append(name)
+        if host is not None:
+            updates.append("host = ?")
+            params.append(host)
+        if port is not None:
+            updates.append("port = ?")
+            params.append(port)
+        if username is not None:
+            updates.append("username = ?")
+            params.append(username)
+        if password is not _UNSET:
+            updates.append("password = ?")
+            params.append(password)
+        if key_path is not _UNSET:
+            updates.append("key_path = ?")
+            params.append(key_path)
+        if tags is not None:
+            updates.append("tags = ?")
+            params.append(tags)
+
+        if not updates:
+            return False
+
+        params.append(server_id)
+        cursor = db.execute(
+            f"UPDATE servers SET {', '.join(updates)} WHERE id = ?",
+            params,
+        )
         db.commit()
         return cursor.rowcount > 0
 
