@@ -113,6 +113,7 @@ class ServerRecord:
             "host": self.host,
             "port": self.port,
             "username": self.username,
+            "password": self.password is not None,  # boolean, never expose actual password
             "key_path": self.key_path,
             "tags": self.tags,
             "created_at": self.created_at,
