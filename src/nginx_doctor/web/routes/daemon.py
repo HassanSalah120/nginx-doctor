@@ -131,7 +131,7 @@ async def get_daemon_status() -> DaemonStatusResponse:
     global daemon_instance
     
     # Check both global instance and PID file
-    daemon = daemon_instance or MonitoringDaemon(pid_file="/tmp/nginx-doctor-web.pid")
+    daemon = daemon_instance or MonitoringDaemon(pid_file=PID_FILE)
     
     running = daemon.is_running()
     info = daemon.get_info() if running else {}
