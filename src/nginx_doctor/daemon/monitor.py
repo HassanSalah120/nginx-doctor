@@ -7,7 +7,6 @@ import json
 import logging
 import os
 import signal
-import sys
 import time
 from datetime import datetime
 from pathlib import Path
@@ -62,7 +61,7 @@ class MonitoringDaemon:
         """Start the daemon."""
         if self.is_running():
             logger.error("Daemon is already running")
-            sys.exit(1)
+            raise RuntimeError("Daemon is already running")
         
         self._write_pid()
         self.running = True
@@ -267,7 +266,6 @@ class MonitoringDaemon:
         """Handle shutdown signals."""
         logger.info(f"Received signal {signum}")
         self.stop()
-        sys.exit(0)
     
     def _write_pid(self) -> None:
         """Write PID file."""
@@ -281,33 +279,50 @@ class MonitoringDaemon:
             Path(self.pid_file).unlink()
         except FileNotFoundError:
             pass
+
+    def get_info(self) -> dict[str, Any]:
+        """Get daemon runtime info.
+
+        Note: this does not guarantee the daemon loop is healthy, only that the PID exists.
+        """
+        pid_file = Path(self.pid_file)
+        pid: int | None = None
+        if pid_file.exists():
+            try:
+                pid = int(pid_file.read_text().strip())
+            except ValueError:
+                pid = None
+
+        return {
+            "pid": pid,
+            "servers": self.servers or "all",
+            "interval": self.interval,
+        }
     
     def is_running(self) -> bool:
         """Check if daemon is running."""
         pid_file = Path(self.pid_file)
-        
         if not pid_file.exists():
             return False
-        
+
         try:
             pid = int(pid_file.read_text().strip())
-            os.kill(pid, 0)  # Check if process exists
+
+            if os.name == "nt":
+                import ctypes
+
+                PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
+                handle = ctypes.windll.kernel32.OpenProcess(
+                    PROCESS_QUERY_LIMITED_INFORMATION, False, pid
+                )
+                if handle:
+                    ctypes.windll.kernel32.CloseHandle(handle)
+                    return True
+                raise ProcessLookupError()
+
+            os.kill(pid, 0)
             return True
         except (ValueError, OSError, ProcessLookupError):
-            # Stale PID file
-            self._remove_pid()
+            # Stale / invalid PID file
+            self._cleanup()
             return False
-    
-    def get_info(self) -> dict[str, Any]:
-        """Get daemon information."""
-        if not self.is_running():
-            return {}
-        
-        pid = int(Path(self.pid_file).read_text().strip())
-        
-        return {
-            "pid": pid,
-            "started": "unknown",  # Could get from procfs on Linux
-            "servers": self.servers or "all",
-            "interval": self.interval,
-        }
