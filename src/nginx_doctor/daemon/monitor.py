@@ -70,9 +70,13 @@ class MonitoringDaemon:
         logger.info(f"Starting daemon with interval={self.interval}s")
         logger.info(f"Monitoring servers: {self.servers or 'all configured'}")
         
-        # Setup signal handlers
-        signal.signal(signal.SIGTERM, self._handle_signal)
-        signal.signal(signal.SIGINT, self._handle_signal)
+        # Setup signal handlers (Unix only)
+        try:
+            signal.signal(signal.SIGTERM, self._handle_signal)
+            signal.signal(signal.SIGINT, self._handle_signal)
+        except (AttributeError, ValueError):
+            # Windows doesn't support SIGTERM
+            pass
         
         try:
             self._run_loop()

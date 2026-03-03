@@ -88,6 +88,14 @@ async def start_daemon(request: DaemonStartRequest) -> dict[str, Any]:
     thread = threading.Thread(target=run_daemon, daemon=True)
     thread.start()
     
+    # Wait a moment for daemon to initialize
+    import time
+    time.sleep(0.5)
+    
+    # Check if daemon actually started
+    if not daemon_instance.is_running():
+        raise HTTPException(status_code=500, detail="Daemon failed to start")
+    
     return {
         "status": "started",
         "interval": request.interval,
