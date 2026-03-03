@@ -337,6 +337,12 @@ class HTMLReportAction:
             "3. Keep only explicitly required public listeners."
         )
 
+        # Collect all fix commands from individual findings
+        all_fix_commands = []
+        for f in items:
+            if f.fix_commands:
+                all_fix_commands.extend(f.fix_commands)
+
         return Finding(
             id=f"{prefix}-GROUP",
             severity=highest,
@@ -345,6 +351,7 @@ class HTMLReportAction:
             cause="Several container ports are directly published on public interfaces instead of being constrained behind the intended reverse-proxy path.",
             evidence=evidence,
             treatment=treatment,
+            fix_commands=all_fix_commands[:10] if all_fix_commands else [],
             impact=impact
             or [
                 "Bypasses Nginx authentication/rate-limits",
@@ -380,6 +387,11 @@ class HTMLReportAction:
         locations = HTMLReportAction._extract_location_labels(items)
         files = sorted({ev.source_file for f in items for ev in f.evidence if ev.source_file})
         evidence = [ev for f in items for ev in f.evidence][:12]
+        # Collect all fix commands from individual findings
+        all_fix_commands = []
+        for f in items:
+            if f.fix_commands:
+                all_fix_commands.extend(f.fix_commands)
         return Finding(
             id="SEC-HEADERS-GROUP",
             severity=Severity.WARNING,
@@ -397,6 +409,7 @@ class HTMLReportAction:
                 "2. Include it in server block and in overriding child locations.\n"
                 "3. Validate with: nginx -t && systemctl reload nginx."
             ),
+            fix_commands=all_fix_commands[:10] if all_fix_commands else [],
             impact=[
                 "Inconsistent browser-side security policy",
                 "Clickjacking/MIME-sniffing/referrer leakage risk on selected routes",
@@ -410,6 +423,11 @@ class HTMLReportAction:
     def _merge_dotfile_group(items: list[Finding]) -> Finding:
         servers = sorted({HTMLReportAction._extract_server_label(i.condition) for i in items})
         evidence = [ev for f in items for ev in f.evidence][:12]
+        # Collect all fix commands from individual findings
+        all_fix_commands = []
+        for f in items:
+            if f.fix_commands:
+                all_fix_commands.extend(f.fix_commands)
         return Finding(
             id="SEC-DOTFILE-GROUP",
             severity=Severity.WARNING,
@@ -422,6 +440,7 @@ class HTMLReportAction:
                 "location ~ /\\.(?!well-known).* { deny all; }\n"
                 "Then run: nginx -t && systemctl reload nginx."
             ),
+            fix_commands=all_fix_commands[:10] if all_fix_commands else [],
             impact=[
                 "Sensitive files like .env/.git can become web-accessible on misrouted paths",
             ],
