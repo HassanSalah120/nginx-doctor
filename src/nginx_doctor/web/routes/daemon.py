@@ -79,10 +79,13 @@ async def start_daemon(request: DaemonStartRequest) -> dict[str, Any]:
     
     # Start in background (non-blocking for web)
     import threading
+    daemon_error = [None]  # Use list to allow mutation in nested function
+    
     def run_daemon():
         try:
             daemon_instance.start()
         except Exception as e:
+            daemon_error[0] = str(e)
             print(f"Daemon error: {e}")
     
     thread = threading.Thread(target=run_daemon, daemon=True)
@@ -94,7 +97,8 @@ async def start_daemon(request: DaemonStartRequest) -> dict[str, Any]:
     
     # Check if daemon actually started
     if not daemon_instance.is_running():
-        raise HTTPException(status_code=500, detail="Daemon failed to start")
+        error_msg = daemon_error[0] or "Unknown error"
+        raise HTTPException(status_code=500, detail=f"Daemon failed to start: {error_msg}")
     
     return {
         "status": "started",

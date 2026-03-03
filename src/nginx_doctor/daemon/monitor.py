@@ -271,7 +271,9 @@ class MonitoringDaemon:
     
     def _write_pid(self) -> None:
         """Write PID file."""
-        Path(self.pid_file).write_text(str(os.getpid()))
+        pid_path = Path(self.pid_file)
+        pid_path.parent.mkdir(parents=True, exist_ok=True)
+        pid_path.write_text(str(os.getpid()))
     
     def _remove_pid(self) -> None:
         """Remove PID file."""
