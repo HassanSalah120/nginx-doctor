@@ -11,6 +11,8 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
+from nginx_doctor.config import ConfigManager
+from nginx_doctor.connector.ssh import SSHConfig
 from nginx_doctor.storage.repositories import ServerRepository
 
 router = APIRouter()
@@ -56,6 +58,19 @@ async def create_server(request: CreateServerRequest) -> dict:
     server = _repo.get_by_id(server_id)
     if not server:
         raise HTTPException(status_code=500, detail="Failed to create server")
+
+    config_mgr = ConfigManager()
+    config_mgr.add_profile(
+        server.name,
+        SSHConfig(
+            host=server.host,
+            user=server.username,
+            port=server.port,
+            key_path=server.key_path,
+            use_sudo=True,
+            password=server.password,
+        ),
+    )
     return {"server": server.to_dict()}
 
 
@@ -105,6 +120,23 @@ async def update_server(server_id: int, request: UpdateServerRequest) -> dict:
     fresh = _repo.get_by_id(server_id)
     if not fresh:
         raise HTTPException(status_code=500, detail="Failed to load updated server")
+
+    if fresh.name != server.name:
+        config_mgr = ConfigManager()
+        config_mgr.remove_profile(server.name)
+
+    config_mgr = ConfigManager()
+    config_mgr.add_profile(
+        fresh.name,
+        SSHConfig(
+            host=fresh.host,
+            user=fresh.username,
+            port=fresh.port,
+            key_path=fresh.key_path,
+            use_sudo=True,
+            password=fresh.password,
+        ),
+    )
     return {"server": fresh.to_dict()}
 
 
@@ -138,6 +170,9 @@ async def delete_server(
             )
         else:
             raise HTTPException(status_code=404, detail="Server not found")
+
+    config_mgr = ConfigManager()
+    config_mgr.remove_profile(server.name)
 
     result = {"deleted": True}
     if cascade:
