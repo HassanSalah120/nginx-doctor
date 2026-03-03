@@ -110,7 +110,8 @@ def test_path_conflict_health_exact_return_is_not_broken():
     assert route.severity.value != "critical"
 
 
-def test_path_conflict_benign_prefix_overlap_is_info():
+def test_path_conflict_benign_prefix_overlap_is_skipped():
+    """Expected precedence (like / and /admin/) should not be reported."""
     model = ServerModel(
         hostname="example.com",
         nginx=NginxInfo(
@@ -128,6 +129,5 @@ def test_path_conflict_benign_prefix_overlap_is_info():
         ),
     )
     findings = PathConflictAuditor(model).audit()
-    route = next(f for f in findings if f.id == "ROUTE-1")
-    assert route.severity.value == "info"
-    assert "Expected precedence" in route.cause
+    # Benign expected precedence should not create findings
+    assert not findings

@@ -53,12 +53,15 @@ class PathConflictAuditor:
                     target_differs = winner_target != shadowed_target
                     winner_broken, broken_reason = self._is_broken_route(server, winner, probe)
                     ambiguous_overlap = self._is_ambiguous_overlap(winner.path, shadowed.path)
+                    
+                    # Skip benign expected precedence entirely - it's normal Nginx behavior
+                    if not winner_broken and not (target_differs and ambiguous_overlap):
+                        continue
+                    
                     conflict_class = (
                         "broken routing"
                         if winner_broken
                         else "suspicious overlap"
-                        if (target_differs and ambiguous_overlap)
-                        else "expected precedence"
                     )
 
                     key = (id(server), min(i, j), max(i, j))
@@ -69,8 +72,8 @@ class PathConflictAuditor:
                     findings.append(
                         Finding(
                             id="ROUTE-1",
-                            severity=Severity.CRITICAL if winner_broken else Severity.WARNING if (target_differs and ambiguous_overlap) else Severity.INFO,
-                            confidence=0.94 if winner_broken else 0.85 if (target_differs and ambiguous_overlap) else 0.7,
+                            severity=Severity.CRITICAL if winner_broken else Severity.WARNING,
+                            confidence=0.94 if winner_broken else 0.85,
                             condition=f"Route conflict ({conflict_class}) between '{a.path}' and '{b.path}'",
                             cause=(
                                 f"Request probe '{probe}' is likely handled by '{winner.path}', "
@@ -80,8 +83,6 @@ class PathConflictAuditor:
                                     if winner_broken
                                     else
                                     f"Routes point to different targets ({winner_target} vs {shadowed_target}) with ambiguous overlap."
-                                    if (target_differs and ambiguous_overlap)
-                                    else "Expected precedence: more specific prefix location wins."
                                 )
                             ),
                             evidence=[
@@ -105,12 +106,8 @@ class PathConflictAuditor:
                             impact=[
                                 "Requests may fail due to missing or failed route handler"
                                 if winner_broken
-                                else "Requests may be routed to the wrong backend"
-                                if (target_differs and ambiguous_overlap)
-                                else "Low immediate routing risk",
-                                "One app path can unintentionally steal traffic from another app"
-                                if (target_differs and ambiguous_overlap or winner_broken)
-                                else "Expected Nginx precedence behavior; primarily config hygiene.",
+                                else "Requests may be routed to the wrong backend",
+                                "One app path can unintentionally steal traffic from another app",
                             ],
                         )
                     )
