@@ -19,6 +19,7 @@ from nginx_doctor.web.routes import connect, preview, apply, jobs, status
 from nginx_doctor.web.routes import servers as servers_route
 from nginx_doctor.web.routes import scans as scans_route
 from nginx_doctor.web.routes import reports as reports_route
+from nginx_doctor.web.routes import cicd, daemon, notifications, k8s
 from nginx_doctor.web.session import session_store
 
 # Module paths
@@ -64,6 +65,12 @@ def create_app() -> FastAPI:
     app.include_router(servers_route.router, prefix="/api", tags=["servers"])
     app.include_router(scans_route.router, prefix="/api", tags=["scans"])
     app.include_router(reports_route.router, prefix="/api", tags=["reports"])
+    
+    # Enterprise feature routers
+    app.include_router(cicd.router, prefix="/api", tags=["ci-cd"])
+    app.include_router(daemon.router, prefix="/api", tags=["daemon"])
+    app.include_router(notifications.router, prefix="/api", tags=["notifications"])
+    app.include_router(k8s.router, prefix="/api", tags=["kubernetes"])
 
     @app.get("/wizard", response_class=HTMLResponse)
     async def wizard_page(request: Request) -> Any:
@@ -98,6 +105,21 @@ def create_app() -> FastAPI:
         return templates.TemplateResponse(
             "report.html", {"request": request, "job_id": job_id}
         )
+    
+    @app.get("/settings/integrations", response_class=HTMLResponse)
+    async def integrations_page(request: Request) -> Any:
+        """Integrations and notifications settings page."""
+        return templates.TemplateResponse("integrations.html", {"request": request})
+    
+    @app.get("/settings/daemon", response_class=HTMLResponse)
+    async def daemon_settings_page(request: Request) -> Any:
+        """Daemon monitoring settings page."""
+        return templates.TemplateResponse("daemon.html", {"request": request})
+    
+    @app.get("/kubernetes", response_class=HTMLResponse)
+    async def kubernetes_page(request: Request) -> Any:
+        """Kubernetes analyzer page."""
+        return templates.TemplateResponse("kubernetes.html", {"request": request})
 
     @app.on_event("startup")
     async def startup() -> None:
