@@ -11,7 +11,7 @@ from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
 
 from nginx_doctor.actions.cicd_formatter import CICDFormatter, SARIFFormatter
-from nginx_doctor.storage.repositories import JobRepository, ServerRepository
+from nginx_doctor.storage.repositories import ScanJobRepository, ServerRepository
 from nginx_doctor.web.job_runner import get_runner
 
 router = APIRouter(prefix="/cicd", tags=["ci-cd"])
@@ -60,8 +60,8 @@ class WebhookConfig(BaseModel):
 @router.post("/export", response_model=CICDExportResponse)
 async def export_scan_results(request: CICDExportRequest) -> CICDExportResponse:
     """Export scan results in CI/CD format (JSON, SARIF, GitHub, JUnit)."""
-    job_repo = JobRepository()
-    job = job_repo.get(request.job_id)
+    job_repo = ScanJobRepository()
+    job = job_repo.get_by_id(request.job_id)
     
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")
@@ -135,8 +135,8 @@ def _format_junit(findings: list, job_id: int) -> dict[str, Any]:
 @router.get("/jobs/{job_id}/status")
 async def get_job_status_for_cicd(job_id: int) -> dict[str, Any]:
     """Get job status in CI/CD friendly format."""
-    job_repo = JobRepository()
-    job = job_repo.get(job_id)
+    job_repo = ScanJobRepository()
+    job = job_repo.get_by_id(job_id)
     
     if not job:
         raise HTTPException(status_code=404, detail="Job not found")

@@ -182,11 +182,11 @@ async def trigger_notification(event: str, job_id: int | None = None) -> dict[st
     
     # Get findings from job
     if job_id:
-        from nginx_doctor.storage.repositories import JobRepository
-        job = JobRepository().get(job_id)
-        if job and job.report:
-            findings = job.report.findings
-            server_name = job.server.name if job.server else f"job-{job_id}"
+        from nginx_doctor.storage.repositories import ScanJobRepository
+        job_repo = ScanJobRepository().get(job_id)
+        if job_repo and job_repo.report:
+            findings = job_repo.report.findings
+            server_name = job_repo.server.name if job_repo.server else f"job-{job_id}"
             notifier.send_notification(findings, server_name=server_name)
     
     return {
