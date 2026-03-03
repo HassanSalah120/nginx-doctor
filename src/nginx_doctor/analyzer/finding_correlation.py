@@ -55,6 +55,11 @@ class CorrelationEngine:
         if routing_cor:
             results.append(routing_cor)
 
+        # 5. Compromise chain: admin + debug + env/file exposure + weak firewall
+        compromise_cor = self._check_compromise_chain()
+        if compromise_cor:
+            results.append(compromise_cor)
+
         return results
 
     def _check_header_inheritance(self) -> SynthesizedFinding | None:
@@ -184,5 +189,30 @@ class CorrelationEngine:
                         "effort": "low"
                     }
                 ]
+            )
+        return None
+
+    def _check_compromise_chain(self) -> SynthesizedFinding | None:
+        """Pattern: exposed admin/dashboard + debug flag + .env leakage + weak/no firewall."""
+        present = {f.id for f in self.findings}
+        # require sensitive path plus either laravel debug or dotfile exposure and firewall warning
+        if "NGX-SENS-1" in present and (
+            ("LARAVEL-1" in present or "NGX-SEC-3" in present) and "FIREWALL-1" in present
+        ):
+            return SynthesizedFinding(
+                correlation_id="full-compromise-chain",
+                root_cause_hypothesis=(
+                    "Public admin/debug interface reachable for an application with debug enabled "
+                    "and exposed .env or missing dotfile protection while the host firewall is absent."
+                ),
+                blast_radius="Potential full application and host compromise",
+                severity="critical",
+                supporting_rule_ids=list(present & {"NGX-SENS-1", "LARAVEL-1", "NGX-SEC-3", "FIREWALL-1"}),
+                confidence=0.85,
+                fix_bundle=[
+                    {"step": "Close admin/debug paths or require authentication.", "effort": "medium"},
+                    {"step": "Disable APP_DEBUG and protect .env files.", "effort": "low"},
+                    {"step": "Enable and tighten local firewall rules.", "effort": "low"},
+                ],
             )
         return None

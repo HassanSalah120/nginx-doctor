@@ -8,7 +8,7 @@ Endpoints:
 
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Query
 from pydantic import BaseModel, Field
 
 from nginx_doctor.storage.repositories import ServerRepository
@@ -109,9 +109,37 @@ async def update_server(server_id: int, request: UpdateServerRequest) -> dict:
 
 
 @router.delete("/servers/{server_id}")
-async def delete_server(server_id: int) -> dict:
-    """Delete a server."""
+async def delete_server(
+    server_id: int,
+    cascade: bool = Query(False, description="Also delete associated scan jobs"),
+) -> dict:
+    """Delete a server.
+
+    If ``cascade`` is true, any scan jobs linked to the server will be
+    removed first.  Otherwise we mimic strict foreign-key behaviour and
+    return a 400 error when jobs are present.
+
+    A 404 is returned when the server simply doesn’t exist.
+    """
+    # optional cascade path
+    if cascade:
+        from nginx_doctor.storage.repositories import ScanJobRepository
+        job_repo = ScanJobRepository()
+        jobs_removed = job_repo.delete_by_server_id(server_id)
+        # jobs_removed may be zero if there were none
+
     deleted = _repo.delete(server_id)
     if not deleted:
-        raise HTTPException(status_code=404, detail="Server not found")
-    return {"deleted": True}
+        if _repo.get_by_id(server_id):
+            # still exists; jobs prevented deletion
+            raise HTTPException(
+                status_code=400,
+                detail="Cannot delete server with existing scan jobs; delete jobs first",
+            )
+        else:
+            raise HTTPException(status_code=404, detail="Server not found")
+
+    result = {"deleted": True}
+    if cascade:
+        result["jobs_deleted"] = jobs_removed
+    return result

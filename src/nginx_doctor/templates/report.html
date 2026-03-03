@@ -2202,9 +2202,9 @@
               data: [sevCounts.CRITICAL, sevCounts.WARNING, sevCounts.INFO],
               backgroundColor: ["#ef4444", "#f59e0b", "#3b82f6"],
               borderRadius: 12,
-              maxBarThickness: 40,
-            },
-          ],
+              maxBarThickness: 40
+            }
+          ]
         },
         options: {
           indexAxis: "y",
@@ -2226,24 +2226,14 @@
             x: {
               beginAtZero: true,
               grid: { color: "rgba(255, 255, 255, 0.05)", drawBorder: false },
-              ticks: { color: "#64748b", font: { weight: "bold", size: 10 }, precision: 0 },
+              ticks: { color: "#64748b", font: { weight: "bold", size: 10 }, precision: 0 }
             },
             y: {
               grid: { display: false, drawBorder: false },
-              ticks: { color: "#f8fafc", font: { weight: "bold", size: 11 } },
-            },
-          },
-        },
-      });
-
-      // Filter Logic
-      function filterFindings(severity, buttonEl = null) {
-        const cards = document.querySelectorAll(".finding-card");
-        const btns = document.querySelectorAll(".filter-btn");
-        const normalizedSeverity = String(severity || "ALL").toUpperCase();
-        const hideExpected = document.getElementById("toggle-hide-expected-route")?.checked ?? true;
-
-        // UI state
+              ticks: { color: "#f8fafc", font: { weight: "bold", size: 11 } }
+            }
+          }
+        }
         btns.forEach((b) => {
           b.classList.remove("bg-white/10", "text-white");
           b.classList.add("text-slate-500");

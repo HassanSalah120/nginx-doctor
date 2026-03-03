@@ -34,6 +34,7 @@ def deduplicate_findings(findings: list[Finding]) -> list[Finding]:
         "Multiple PHP versions": "NGX100",
         "Mixed PHP versions": "NGX101",
         ".env file may be exposed": "NGX200",
+        "Sensitive path": "NGX210",
         "Port 443 without SSL directive": "NGX201",
         "SSL enabled without certificate": "NGX202",
         "Insecure security headers": "SEC001",

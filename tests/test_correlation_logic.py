@@ -58,3 +58,18 @@ def test_tls_posture_correlation(mock_topology):
     
     c = next((x for x in correlations if x.correlation_id == "ingress-tls-posture-risk"), None)
     assert c is not None
+
+
+def test_full_compromise_chain(mock_topology):
+    # create findings that satisfy the new chain rule
+    common_evidence = [Evidence(source_file="/etc/nginx/nginx.conf", line_number=1, excerpt="", command="")]
+    f1 = Finding(id="NGX-SENS-1", severity=Severity.WARNING, confidence=0.9, condition="Sensitive path '/admin' exposed", cause="", evidence=common_evidence)
+    f2 = Finding(id="LARAVEL-1", severity=Severity.CRITICAL, confidence=0.9, condition="APP_DEBUG enabled", cause="", evidence=common_evidence)
+    f3 = Finding(id="NGX-SEC-3", severity=Severity.WARNING, confidence=0.9, condition="Missing dotfile protection", cause="", evidence=common_evidence)
+    f4 = Finding(id="FIREWALL-1", severity=Severity.WARNING, confidence=0.9, condition="No firewall", cause="", evidence=common_evidence)
+    findings = [f1, f2, f3, f4]
+    engine = CorrelationEngine(findings, mock_topology)
+    correlations = engine.correlate()
+    c = next((x for x in correlations if x.correlation_id == "full-compromise-chain"), None)
+    assert c is not None
+    assert c.severity == "critical"

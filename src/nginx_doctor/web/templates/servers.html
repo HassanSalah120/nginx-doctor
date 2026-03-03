@@ -79,49 +79,49 @@
 {% block scripts %}
 <script>
 async function loadServers() {
-    const res = await fetch('/api/servers');
-    const data = await res.json();
-    const tbody = document.getElementById('servers-tbody');
+    try {
+        const data = await apiFetch('/api/servers');
+        const tbody = document.getElementById('servers-tbody');
 
-    if (!data.servers || data.servers.length === 0) {
-        tbody.innerHTML = '<tr><td colspan="7"><div class="empty-state"><h3>No servers registered</h3><p>Add a server above to get started</p></div></td></tr>';
-        return;
+        if (!data.servers || data.servers.length === 0) {
+            tbody.innerHTML = '<tr><td colspan="7"><div class="empty-state"><h3>No servers registered</h3><p>Add a server above to get started</p></div></td></tr>';
+            return;
+        }
+
+        tbody.innerHTML = data.servers.map(s => `
+            <tr>
+                <td class="text-muted">#${s.id}</td>
+                <td><strong>${s.name}</strong></td>
+                <td>${s.host}</td>
+                <td>${s.port}</td>
+                <td>
+                    <div class="auth-badge ${s.password ? 'auth-password' : s.key_path ? 'auth-key' : 'auth-agent'}">${s.password ? '🔒 Password' : s.key_path ? '🔑 Key' : '🤖 Agent'}</div>
+                </td>
+                <td class="text-muted">${s.tags || '—'}</td>
+                <td>
+                    <button class="btn btn-sm btn-primary" onclick="runScan(${s.id})">▶ Scan</button>
+                    <button class="btn btn-sm btn-secondary" onclick="editServer(${s.id}, '${s.name.replace(/'/g,"\\'")}', '${s.host}', ${s.port}, '${s.username}', '${(s.key_path||'').replace(/'/g,"\\'")}', '${(s.tags||'').replace(/'/g,"\\'")}', ${s.password ? 'true' : 'false'})">✎ Edit</button>
+                    <button class="btn btn-sm btn-danger" onclick="deleteServer(${s.id})">✕</button>
+                </td>
+            </tr>
+        `).join('');
+    } catch (e) {
+        showToast('Unable to load servers: ' + e.message, 'danger');
+        console.error('loadServers error', e);
     }
-
-    tbody.innerHTML = data.servers.map(s => `
-        <tr>
-            <td class="text-muted">#${s.id}</td>
-            <td><strong>${s.name}</strong></td>
-            <td>${s.host}</td>
-            <td>${s.port}</td>
-            <td>
-                <div class="auth-badge ${s.password ? 'auth-password' : s.key_path ? 'auth-key' : 'auth-agent'}">${s.password ? '🔒 Password' : s.key_path ? '🔑 Key' : '🤖 Agent'}</div>
-            </td>
-            <td class="text-muted">${s.tags || '—'}</td>
-            <td>
-                <button class="btn btn-sm btn-primary" onclick="runScan(${s.id})">▶ Scan</button>
-                <button class="btn btn-sm btn-secondary" onclick="editServer(${s.id}, '${s.name.replace(/'/g,"\\'")}', '${s.host}', ${s.port}, '${s.username}', '${(s.key_path||'').replace(/'/g,"\\'")}', '${(s.tags||'').replace(/'/g,"\\'")}', ${s.password ? 'true' : 'false'})">✎ Edit</button>
-                <button class="btn btn-sm btn-danger" onclick="deleteServer(${s.id})">✕</button>
-            </td>
-        </tr>
-    `).join('');
 }
 
 async function runScan(serverId) {
     try {
-        const res = await fetch('/api/scan', {
+        const data = await apiFetch('/api/scan', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify({ server_id: serverId }),
         });
-        const data = await res.json();
-        if (res.ok) {
-            window.location.href = `/jobs/${data.job_id}`;
-        } else {
-            alert(data.detail || 'Failed to start scan');
-        }
+        window.location.href = `/jobs/${data.job_id}`;
     } catch (e) {
-        alert('Error: ' + e.message);
+        console.error('Scan request failed', e);
+        showToast('Failed to start scan: ' + e.message, 'danger');
     }
 }
 
@@ -129,11 +129,28 @@ document.getElementById('add-server-form').addEventListener('submit', async (e) 
     e.preventDefault();
     const msg = document.getElementById('form-message');
 
+    // basic validation
+    const nameVal = document.getElementById('name').value.trim();
+    const hostVal = document.getElementById('host').value.trim();
+    const portVal = parseInt(document.getElementById('port').value) || 22;
+    if (!nameVal || !hostVal) {
+        msg.style.display = 'block';
+        msg.className = 'mt-1 text-danger';
+        msg.textContent = 'Name and host are required.';
+        return;
+    }
+    if (portVal < 1 || portVal > 65535) {
+        msg.style.display = 'block';
+        msg.className = 'mt-1 text-danger';
+        msg.textContent = 'Port must be 1‑65535.';
+        return;
+    }
+
     const passwordValue = document.getElementById('password').value;
     const body = {
-        name: document.getElementById('name').value,
-        host: document.getElementById('host').value,
-        port: parseInt(document.getElementById('port').value) || 22,
+        name: nameVal,
+        host: hostVal,
+        port: portVal,
         username: document.getElementById('username').value || 'root',
         password: passwordValue || null,
         key_path: document.getElementById('key_path').value || null,
@@ -142,30 +159,27 @@ document.getElementById('add-server-form').addEventListener('submit', async (e) 
     
     console.log('Creating server with auth:', passwordValue ? 'password set' : 'no password', body.key_path ? 'key_path set' : 'no key');
 
+    const submitBtn = e.target.querySelector('button[type="submit"]');
+    setLoading(submitBtn, true);
     try {
-        const res = await fetch('/api/servers', {
+        const data = await apiFetch('/api/servers', {
             method: 'POST',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
         });
-        const data = await res.json();
-        if (res.ok) {
-            msg.style.display = 'block';
-            msg.className = 'mt-1 text-success';
-            msg.textContent = `✓ Server "${body.name}" added successfully`;
-            e.target.reset();
-            document.getElementById('port').value = '22';
-            document.getElementById('username').value = 'root';
-            loadServers();
-        } else {
-            msg.style.display = 'block';
-            msg.className = 'mt-1 text-danger';
-            msg.textContent = '✗ ' + (data.detail || 'Failed to add server');
-        }
+        msg.style.display = 'block';
+        msg.className = 'mt-1 text-success';
+        msg.textContent = `✓ Server "${body.name}" added successfully`;
+        e.target.reset();
+        document.getElementById('port').value = '22';
+        document.getElementById('username').value = 'root';
+        loadServers();
     } catch (err) {
         msg.style.display = 'block';
         msg.className = 'mt-1 text-danger';
-        msg.textContent = '✗ Error: ' + err.message;
+        msg.textContent = '✗ ' + err.message;
+    } finally {
+        setLoading(submitBtn, false);
     }
 });
 
@@ -190,6 +204,8 @@ function closeEditModal() {
 
 async function saveEdit() {
     const msg = document.getElementById('edit-message');
+    const saveBtn = document.querySelector('#edit-modal .btn-primary');
+    setLoading(saveBtn, true);
     const clearPassword = document.getElementById('clear-password').checked;
     const newPassword = document.getElementById('edit-password').value;
     
@@ -215,43 +231,42 @@ async function saveEdit() {
     console.log('Sending PUT with body keys:', Object.keys(body));
     
     try {
-        const res = await fetch(`/api/servers/${editingServerId}`, {
+        await apiFetch(`/api/servers/${editingServerId}`, {
             method: 'PUT',
             headers: { 'Content-Type': 'application/json' },
             body: JSON.stringify(body),
         });
-        const data = await res.json();
-        if (res.ok) {
-            msg.style.display = 'block';
-            msg.className = 'mt-1 text-success';
-            msg.textContent = '✓ Server updated successfully';
-            setTimeout(() => {
-                closeEditModal();
-                loadServers();
-            }, 800);
-        } else {
-            msg.style.display = 'block';
-            msg.className = 'mt-1 text-danger';
-            msg.textContent = '✗ ' + (data.detail || 'Failed to update server');
-        }
+        msg.style.display = 'block';
+        msg.className = 'mt-1 text-success';
+        msg.textContent = '✓ Server updated successfully';
+        showToast('Server updated', 'success');
+        setTimeout(() => {
+            closeEditModal();
+            loadServers();
+        }, 800);
     } catch (err) {
         msg.style.display = 'block';
         msg.className = 'mt-1 text-danger';
-        msg.textContent = '✗ Error: ' + err.message;
+        msg.textContent = '✗ ' + err.message;
+        showToast('Failed to update server: ' + err.message, 'danger');
+    } finally {
+        setLoading(saveBtn, false);
     }
 }
 
+
 async function deleteServer(id) {
     if (!confirm('Are you sure you want to delete this server?')) return;
+    // ask about cascade deletion of jobs
+    const cascade = confirm('Also delete all associated scan jobs? Click OK to delete jobs as well, Cancel to keep them (you may remove manually later).');
     try {
-        const res = await fetch(`/api/servers/${id}`, { method: 'DELETE' });
-        if (res.ok) {
-            loadServers();
-        } else {
-            alert('Failed to delete server');
-        }
+        const url = `/api/servers/${id}` + (cascade ? '?cascade=true' : '');
+        const res = await apiFetch(url, { method: 'DELETE' });
+        showToast('Server deleted' + (cascade ? ' (jobs also removed)' : ''), 'info');
+        loadServers();
     } catch (e) {
-        alert('Error: ' + e.message);
+        console.error('delete failed', e);
+        showToast('Failed to delete server: ' + e.message, 'danger');
     }
 }
 </script>

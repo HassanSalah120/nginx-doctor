@@ -98,7 +98,7 @@ class ScanJobRunner:
                 raise ValueError(f"Server {server_id} not found")
 
             self._log_repo.append(
-                job_id, f"Connecting to {server.host}:{server.port}..."
+                job_id, f"Connecting to {server.username}@{server.host}:{server.port}..."
             )
 
             auth_mode = "agent/default keys"

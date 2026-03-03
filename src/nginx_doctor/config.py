@@ -115,3 +115,20 @@ class ConfigManager:
             self._save_profiles(profiles)
             return True
         return False
+
+    def set_notification(self, name: str, config: dict[str, Any]) -> None:
+        """Store notification configuration."""
+        profiles = self._load_profiles()
+        if "notifications" not in profiles:
+            profiles["notifications"] = {}
+        profiles["notifications"][name] = config
+        self._save_profiles(profiles)
+
+    def get_notification(self, name: str) -> dict[str, Any] | None:
+        """Get notification configuration."""
+        profiles = self._load_profiles()
+        return profiles.get("notifications", {}).get(name)
+
+    def load_profile(self, name: str) -> SSHConfig | None:
+        """Alias for get_profile for compatibility."""
+        return self.get_profile(name)

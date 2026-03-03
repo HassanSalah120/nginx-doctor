@@ -5,6 +5,7 @@ typed dataclass records.
 """
 
 import json
+import sqlite3
 from datetime import datetime
 from typing import Any
 
@@ -61,11 +62,21 @@ class ServerRepository:
         return self._row_to_record(row) if row else None
 
     def delete(self, server_id: int) -> bool:
-        """Delete a server by ID. Returns True if a row was deleted."""
+        """Delete a server by ID. Returns True if a row was deleted.
+
+        If the server has dependent rows (scan jobs) the underlying
+        SQLite engine will raise an :class:`sqlite3.IntegrityError` because
+        of the foreign key constraint.  We catch that here and simply
+        return ``False`` so callers can decide how to handle it.
+        """
         db = get_db()
-        cursor = db.execute("DELETE FROM servers WHERE id = ?", (server_id,))
-        db.commit()
-        return cursor.rowcount > 0
+        try:
+            cursor = db.execute("DELETE FROM servers WHERE id = ?", (server_id,))
+            db.commit()
+            return cursor.rowcount > 0
+        except sqlite3.IntegrityError:
+            # foreign key violation – dependent scan jobs exist
+            return False
 
     def update(
         self,
@@ -136,7 +147,6 @@ class ServerRepository:
             created_at=row["created_at"] or "",
         )
 
-
 class ScanJobRepository:
     """CRUD operations for the scan_jobs table."""
 
@@ -149,6 +159,34 @@ class ScanJobRepository:
         )
         db.commit()
         return cursor.lastrowid  # type: ignore[return-value]
+
+    def delete_by_server_id(self, server_id: int) -> int:
+        """Delete all jobs tied to a specific server and return count.
+
+        Because other tables (findings, job_logs, correlations) have
+        foreign keys pointing to scan_jobs.id we must remove their
+        rows first or SQLite will raise an IntegrityError.  This method
+        therefore performs a simple manual cascade.
+        """
+        db = get_db()
+        # fetch affected job ids
+        rows = db.execute(
+            "SELECT id FROM scan_jobs WHERE server_id = ?", (server_id,)
+        ).fetchall()
+        job_ids = [r["id"] for r in rows]
+        if job_ids:
+            # delete child tables
+            placeholders = ",".join("?" for _ in job_ids)
+            db.execute(f"DELETE FROM findings WHERE job_id IN ({placeholders})", job_ids)
+            db.execute(f"DELETE FROM job_logs WHERE job_id IN ({placeholders})", job_ids)
+            db.execute(f"DELETE FROM correlations WHERE job_id IN ({placeholders})", job_ids)
+            # finally delete jobs themselves
+            cursor = db.execute(
+                f"DELETE FROM scan_jobs WHERE server_id = ?", (server_id,)
+            )
+            db.commit()
+            return cursor.rowcount or 0
+        return 0
 
     def update_status(
         self,

@@ -8,6 +8,7 @@ sys.path.insert(0, str(Path(__file__).parent.parent / "src"))
 
 from nginx_doctor.checks.security.security_auditor import SecurityAuditor
 from nginx_doctor.model.server import ServerModel, NginxInfo, ServerBlock, LocationBlock
+from nginx_doctor.model.evidence import Severity
 from nginx_doctor.checks import CheckContext
 
 def test_security_audit_findings():
@@ -59,3 +60,18 @@ def test_security_audit_findings():
     assert 'NGX-SEC-2' in ids     # Autoindex enabled
     assert 'NGX-SEC-3' in ids     # Dotfile protection missing
     assert 'NGX-SEC-4' in ids     # PHP in uploads
+
+    # sensitive path detection
+    # add an admin location on same server
+    server.locations.append(LocationBlock(path="/admin", source_file="/etc/nginx/nginx.conf"))
+    findings = auditor.run(ctx)
+    ids = [f.id for f in findings]
+    assert 'NGX-SENS-1' in ids
+
+    # default_server with sensitive path should be critical
+    default_srv = ServerBlock(server_names=["_"], listen=["80 default_server"])
+    default_srv.locations = [LocationBlock(path="/admin", source_file="/etc/nginx/nginx.conf")]
+    nginx_info.servers.append(default_srv)
+    findings = auditor.run(ctx)
+    sens_findings = [f for f in findings if f.id == 'NGX-SENS-1']
+    assert any(f.severity == Severity.CRITICAL for f in sens_findings)

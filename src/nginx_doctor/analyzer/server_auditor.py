@@ -60,8 +60,15 @@ class ServerAuditor:
                 # Check root directive
                 roots = [server.root] if server.root else []
                 for loc in server.locations:
-                    if loc.root: roots.append(loc.root)
-                    if loc.alias: roots.append(loc.alias)
+                    # some tests create lightweight "L" objects with only a few
+                    # attributes; guard against missing fields so the audit logic
+                    # remains robust.
+                    root_val = getattr(loc, "root", None)
+                    if root_val:
+                        roots.append(root_val)
+                    alias_val = getattr(loc, "alias", None)
+                    if alias_val:
+                        roots.append(alias_val)
                 
                 # If project.env_path starts with any of these roots, it MIGHT be reachable
                 # Example: env=/var/www/app/.env, root=/var/www/app -> Reachable
@@ -103,8 +110,8 @@ class ServerAuditor:
         if exposed_projects:
             findings.append(
                 Finding(
-                    severity=Severity.WARNING,
-                    confidence=0.85,
+                    severity=Severity.CRITICAL,
+                    confidence=0.90,
                     condition=".env file may be exposed",
                     cause=f"Found .env files within Nginx document root without obvious protection",
                     evidence=[

@@ -27,9 +27,23 @@ _db_path: Path = _DEFAULT_DB_PATH
 def set_db_path(path: Path | str) -> None:
     """Override the database path (useful for testing).
 
-    Must be called before init_db() or get_db().
+    Any existing thread-local connection is closed so subsequent calls
+    to :func:`get_db` will open a connection against the new file.  This
+    prevents stale connections from still pointing at the old database
+    after tests switch paths.
+
+    Must be called before :func:`init_db` or :func:`get_db`.
     """
     global _db_path
+    # close any open connection on this thread
+    conn = getattr(_local, "connection", None)
+    if conn is not None:
+        try:
+            conn.close()
+        except Exception:
+            pass
+        _local.connection = None
+
     _db_path = Path(path)
 
 

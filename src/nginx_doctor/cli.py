@@ -1106,5 +1106,271 @@ def web(port: int, host: str) -> None:
     run_server(host=host, port=port)
 
 
+@main.command()
+@click.argument("server")
+@click.option("--format", "output_format", type=click.Choice(["json", "sarif", "github"]), default="json",
+              help="Output format for CI/CD integration")
+@click.option("--output", "-o", type=click.Path(), help="Output file (default: stdout)")
+@click.option("--fail-on-warning", is_flag=True, help="Exit with error on warnings (not just critical)")
+@click.option("--timeout", default=300, help="Scan timeout in seconds")
+@click.pass_context
+def ci(
+    ctx: click.Context,
+    server: str,
+    output_format: str,
+    output: str | None,
+    fail_on_warning: bool,
+    timeout: int,
+) -> None:
+    """CI/CD scan mode with machine-readable output.
+    
+    Designed for integration with GitHub Actions, GitLab CI, Jenkins, etc.
+    
+    Exit codes:
+        0 = Success (no issues or only info)
+        1 = Warnings found (with --fail-on-warning)
+        2 = Critical issues found
+        3 = Error during scan
+    
+    Examples:
+        nginx-doctor ci myserver --format json
+        nginx-doctor ci myserver --format sarif -o results.sarif
+        nginx-doctor ci myserver --format github --fail-on-warning
+    """
+    import time
+    from nginx_doctor.actions.cicd_formatter import CICDFormatter, SARIFFormatter
+    
+    cfg = _resolve_config(ctx, server)
+    start_time = time.time()
+    
+    try:
+        with SSHConnector(cfg) as ssh:
+            # Run scan
+            findings = _run_full_scan(ssh, cfg, timeout)
+            scan_duration = time.time() - start_time
+            
+            # Format output
+            if output_format == "sarif":
+                result = SARIFFormatter.format(findings)
+            elif output_format == "github":
+                # GitHub Actions annotation format
+                result = CICDFormatter.format_findings(findings, server_name=server, scan_duration=scan_duration)
+                # Add GitHub-specific fields
+                result["github"] = {
+                    "annotations": result.get("annotations", []),
+                    "summary": f"Found {result['summary']['critical']} critical, {result['summary']['warning']} warnings"
+                }
+            else:
+                result = CICDFormatter.format_findings(findings, server_name=server, scan_duration=scan_duration)
+            
+            # Output
+            output_json = json.dumps(result, indent=2 if output_format == "json" else None)
+            
+            if output:
+                Path(output).write_text(output_json)
+                console.print(f"[green]Results written to {output}[/]")
+            else:
+                print(output_json)
+            
+            # Exit code
+            exit_code = CICDFormatter.get_exit_code(findings, fail_on_warning)
+            sys.exit(exit_code)
+            
+    except Exception as e:
+        error_result = {
+            "error": str(e),
+            "timestamp": datetime.datetime.utcnow().isoformat() + "Z",
+            "findings": [],
+            "summary": {"error": True, "message": str(e)},
+        }
+        print(json.dumps(error_result))
+        sys.exit(3)
+
+
+def _run_full_scan(ssh, cfg: SSHConfig, timeout: int) -> list:
+    """Run complete scan and return findings."""
+    scanners = [
+        NginxScanner(),
+        PHPScanner(),
+        DockerScanner(),
+        NodeScanner(),
+        MySQLScanner(),
+        CertbotScanner(),
+        NetworkSurfaceScanner(),
+        FirewallScanner(),
+        SystemdScanner(),
+        RedisScanner(),
+        SecurityBaselineScanner(),
+        TelemetryScanner(),
+        VulnerabilityScanner(),
+        WorkerScanner(),
+        TLSStatusScanner(),
+        UpstreamProbeScanner(),
+    ]
+    
+    fs = FilesystemScanner(ssh)
+    model = fs.scan()
+    
+    for scanner in scanners:
+        scanner.scan(model, ssh)
+    
+    # Analyze
+    doctor = NginxDoctorAnalyzer()
+    doctor.analyze(model, ConfigManager(), cfg)
+    
+    # Run auditors
+    auditors = [
+        ServerAuditor(model),
+        AppDetector(model),
+    ]
+    
+    from nginx_doctor.analyzer.path_conflict_auditor import PathConflictAuditor
+    from nginx_doctor.checks.security.security_auditor import SecurityAuditor
+    from nginx_doctor.checks.performance.performance_auditor import PerformanceAuditor
+    from nginx_doctor.checks.websocket.wss_auditor import WSSAuditor
+    
+    auditors.extend([
+        PathConflictAuditor(model),
+        SecurityAuditor(model),
+        PerformanceAuditor(model),
+        WSSAuditor(model),
+    ])
+    
+    all_findings = []
+    for auditor in auditors:
+        try:
+            findings = auditor.audit()
+            all_findings.extend(findings)
+        except Exception:
+            pass
+    
+    # Correlate
+    engine = CorrelationEngine()
+    engine.process(model, all_findings)
+    
+    return all_findings
+
+
+@main.group()
+def notify() -> None:
+    """Configure notifications and alerts."""
+    pass
+
+
+@notify.command("slack")
+@click.option("--webhook", required=True, help="Slack webhook URL")
+@click.option("--channel", help="Slack channel (e.g., #alerts)")
+@click.option("--only-critical", is_flag=True, help="Only send critical findings")
+@click.pass_context
+def slack_setup(ctx: click.Context, webhook: str, channel: str | None, only_critical: bool) -> None:
+    """Configure Slack notifications for scan results."""
+    from nginx_doctor.config import ConfigManager
+    
+    config_mgr = ctx.obj["config_mgr"]
+    config_mgr.set_notification("slack", {
+        "webhook": webhook,
+        "channel": channel,
+        "only_critical": only_critical,
+    })
+    console.print("[bold green]✓ Slack notifications configured[/]")
+
+
+@notify.command("test")
+@click.pass_context
+def notify_test(ctx: click.Context) -> None:
+    """Send a test notification to verify configuration."""
+    from nginx_doctor.integrations.notifier import NotificationManager
+    
+    config_mgr = ctx.obj["config_mgr"]
+    notifier = NotificationManager(config_mgr)
+    
+    test_finding = {
+        "id": "TEST-001",
+        "severity": "WARNING",
+        "condition": "Test notification",
+        "cause": "This is a test to verify notification settings.",
+    }
+    
+    success = notifier.send_notification([test_finding])
+    if success:
+        console.print("[bold green]✓ Test notification sent successfully[/]")
+    else:
+        console.print("[bold red]✗ Failed to send test notification[/]")
+
+
+@main.group()
+def daemon() -> None:
+    """Continuous monitoring and scheduled scanning."""
+    pass
+
+
+@daemon.command("start")
+@click.option("--interval", default=3600, help="Scan interval in seconds (default: 1 hour)")
+@click.option("--servers", "-s", multiple=True, help="Servers to monitor (default: all)")
+@click.option("--pid-file", default="/tmp/nginx-doctor.pid", help="PID file location")
+@click.option("--log-file", help="Log file (default: stdout)")
+@click.pass_context
+def daemon_start(
+    ctx: click.Context,
+    interval: int,
+    servers: tuple[str, ...],
+    pid_file: str,
+    log_file: str | None,
+) -> None:
+    """Start the monitoring daemon.
+    
+    Runs continuous scans and sends alerts for new issues.
+    
+    Example:
+        nginx-doctor daemon start --interval 3600 --servers web1,web2
+    """
+    from nginx_doctor.daemon.monitor import MonitoringDaemon
+    
+    config_mgr = ctx.obj["config_mgr"]
+    
+    daemon = MonitoringDaemon(
+        config_mgr=config_mgr,
+        interval=interval,
+        servers=list(servers) if servers else None,
+        pid_file=pid_file,
+        log_file=log_file,
+    )
+    
+    try:
+        daemon.start()
+    except KeyboardInterrupt:
+        console.print("\n[yellow]Shutting down daemon...[/]")
+        daemon.stop()
+
+
+@daemon.command("stop")
+@click.option("--pid-file", default="/tmp/nginx-doctor.pid", help="PID file location")
+def daemon_stop(pid_file: str) -> None:
+    """Stop the monitoring daemon."""
+    from nginx_doctor.daemon.monitor import MonitoringDaemon
+    
+    daemon = MonitoringDaemon(pid_file=pid_file)
+    daemon.stop()
+    console.print("[bold green]✓ Daemon stopped[/]")
+
+
+@daemon.command("status")
+@click.option("--pid-file", default="/tmp/nginx-doctor.pid", help="PID file location")
+def daemon_status(pid_file: str) -> None:
+    """Check if daemon is running."""
+    from nginx_doctor.daemon.monitor import MonitoringDaemon
+    
+    daemon = MonitoringDaemon(pid_file=pid_file)
+    if daemon.is_running():
+        info = daemon.get_info()
+        console.print(f"[green]Daemon is running[/]")
+        console.print(f"  PID: {info.get('pid')}")
+        console.print(f"  Started: {info.get('started')}")
+        console.print(f"  Servers: {info.get('servers', 'all')}")
+        console.print(f"  Interval: {info.get('interval')}s")
+    else:
+        console.print("[red]Daemon is not running[/]")
+
+
 if __name__ == "__main__":
     main()

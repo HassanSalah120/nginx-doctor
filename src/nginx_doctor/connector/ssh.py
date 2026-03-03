@@ -75,13 +75,16 @@ class SSHConnector:
         # Prefer key-based authentication
         if self.config.key_path:
             key_path = Path(self.config.key_path).expanduser()
-            if key_path.exists():
-                connect_kwargs["key_filename"] = str(key_path)
-                if self.config.passphrase:
-                    connect_kwargs["passphrase"] = self.config.passphrase
-                # If we have a specific key, don't look for others
-                connect_kwargs["look_for_keys"] = False
-                connect_kwargs["allow_agent"] = False
+            # explicitly fail early if user provided an explicit key that doesn't exist
+            if not key_path.exists():
+                raise ConnectionError(f"SSH key file not found: {key_path}")
+
+            connect_kwargs["key_filename"] = str(key_path)
+            if self.config.passphrase:
+                connect_kwargs["passphrase"] = self.config.passphrase
+            # If we have a specific key, don't look for others
+            connect_kwargs["look_for_keys"] = False
+            connect_kwargs["allow_agent"] = False
         elif self.config.password:
             connect_kwargs["password"] = self.config.password
             # Important: do NOT disable key/agent discovery when a password is present.
@@ -96,7 +99,17 @@ class SSHConnector:
                 "provide passphrase or use ssh-agent)"
             ) from e
         except AuthenticationException as e:
-            raise ConnectionError(f"Authentication failed: {e}") from e
+            # Paramiko often returns the generic string "Authentication failed.";
+            # avoid echoing it twice in our message. normalize to a single human
+            # readable phrase.
+            msg = str(e) or "Authentication failed"
+            if msg.lower().startswith("authentication failed"):
+                raise ConnectionError("Authentication failed") from e
+            else:
+                raise ConnectionError(f"Authentication failed: {msg}") from e
+        except (IOError, OSError) as e:
+            # this typically surfaces when Paramiko cannot load a key file
+            raise ConnectionError(f"SSH key file error: {e}") from e
         except SSHException as e:
             raise ConnectionError(f"SSH error: {e}") from e
 
