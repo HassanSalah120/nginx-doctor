@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field
 
 from nginx_doctor.daemon.monitor import MonitoringDaemon
 from nginx_doctor.config import ConfigManager
+from nginx_doctor.storage.repositories import ServerRepository
 
 router = APIRouter(prefix="/daemon", tags=["daemon"])
 
