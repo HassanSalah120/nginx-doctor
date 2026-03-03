@@ -3,6 +3,8 @@
 Provides web API for continuous monitoring daemon control.
 """
 
+import os
+import tempfile
 from datetime import datetime
 from typing import Any
 
@@ -14,6 +16,9 @@ from nginx_doctor.config import ConfigManager
 from nginx_doctor.storage.repositories import ServerRepository
 
 router = APIRouter(prefix="/daemon", tags=["daemon"])
+
+# Use platform-appropriate temp directory
+PID_FILE = os.path.join(tempfile.gettempdir(), "nginx-doctor-web.pid")
 
 
 class DaemonStartRequest(BaseModel):
@@ -69,7 +74,7 @@ async def start_daemon(request: DaemonStartRequest) -> dict[str, Any]:
         config_mgr=config_mgr,
         interval=request.interval,
         servers=server_names,
-        pid_file="/tmp/nginx-doctor-web.pid",
+        pid_file=PID_FILE,
     )
     
     # Start in background (non-blocking for web)
@@ -87,7 +92,7 @@ async def start_daemon(request: DaemonStartRequest) -> dict[str, Any]:
         "status": "started",
         "interval": request.interval,
         "servers": request.server_ids,
-        "pid_file": "/tmp/nginx-doctor-web.pid",
+        "pid_file": PID_FILE,
     }
 
 
@@ -101,7 +106,7 @@ async def stop_daemon() -> dict[str, Any]:
         daemon_instance = None
     
     # Also check PID file
-    daemon = MonitoringDaemon(pid_file="/tmp/nginx-doctor-web.pid")
+    daemon = MonitoringDaemon(pid_file=PID_FILE)
     if daemon.is_running():
         daemon.stop()
     
