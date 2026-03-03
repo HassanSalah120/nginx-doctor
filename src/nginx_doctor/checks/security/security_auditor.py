@@ -9,6 +9,7 @@ Checks:
 - NGX-SEC-4: PHP execution allowed in uploads directory
 """
 
+import re
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
@@ -44,6 +45,7 @@ class SecurityAuditor(BaseCheck):
         findings.extend(self._check_security_headers(info))
         findings.extend(self._check_autoindex(info))
         findings.extend(self._check_dotfile_protection(info))
+        findings.extend(self._check_sensitive_paths(info))
         findings.extend(self._check_php_in_uploads(info))
         
         return findings
@@ -123,6 +125,16 @@ class SecurityAuditor(BaseCheck):
                         "Add missing headers directly to this block or ensure no `add_header` "
                         "directive overrides the include file."
                     ),
+                    fix_commands=[
+                        f"cat >> {server.source_file or '/etc/nginx/conf.d/security.conf'} << 'EOF'",
+                        f"location {location.path} {{",
+                        "    add_header X-Frame-Options 'SAMEORIGIN' always;",
+                        "    add_header X-Content-Type-Options 'nosniff' always;",
+                        "    add_header Referrer-Policy 'strict-origin-when-cross-origin' always;",
+                        "}",
+                        "EOF",
+                        "nginx -t && systemctl reload nginx"
+                    ],
                     impact=[
                         "Clickjacking attacks (X-Frame-Options)",
                         "MIME-sniffing attacks (X-Content-Type-Options)",
@@ -175,6 +187,10 @@ class SecurityAuditor(BaseCheck):
                         command="",
                     )],
                     treatment="Disable autoindex: 'autoindex off;' or remove the directive.",
+                    fix_commands=[
+                        f"sed -i 's/autoindex on;/autoindex off;/g' {server.source_file}",
+                        "nginx -t && systemctl reload nginx"
+                    ],
                     impact=["Sensitive files in the web root may be disclosed to attackers."],
                 ))
         return findings
@@ -225,6 +241,16 @@ class SecurityAuditor(BaseCheck):
                         "        deny all;\n"
                         "    }"
                     ),
+                    fix_commands=[
+                        f"cat >> {server.source_file or '/etc/nginx/conf.d/security.conf'} << 'EOF'",
+                        "location ~ /\\. {",
+                        "    deny all;",
+                        "    access_log off;",
+                        "    log_not_found off;",
+                        "}",
+                        "EOF",
+                        "nginx -t && systemctl reload nginx"
+                    ],
                     impact=[
                         "Sensitive files like .env, .git/ may be publicly accessible",
                     ],
@@ -245,6 +271,47 @@ class SecurityAuditor(BaseCheck):
             if not location.proxy_pass:
                 return False
         return True
+
+    def _check_sensitive_paths(self, info: "NginxInfo | None") -> list[Finding]:
+        """Flag locations serving known sensitive/admin/debug dashboards."""
+        if not info:
+            return []
+
+        findings: list[Finding] = []
+        patterns = [
+            r"^/admin", r"^/login", r"phpinfo\.php$", r"/telescope", r"/horizon", r"/debug",
+        ]
+
+        for server in info.servers:
+            for loc in server.locations:
+                for pat in patterns:
+                    if re.search(pat, loc.path, re.IGNORECASE):
+                        severity = Severity.WARNING
+                        if server.is_default_server:
+                            severity = Severity.CRITICAL
+                        findings.append(Finding(
+                            id="NGX-SENS-1",
+                            severity=severity,
+                            confidence=0.88,
+                            condition=f"Sensitive path '{loc.path}' exposed",
+                            cause=(
+                                f"Location '{loc.path}' matches sensitive pattern '{pat}' in server {server.server_names}."
+                            ),
+                            evidence=[Evidence(
+                                source_file=loc.source_file or server.source_file or info.config_path,
+                                line_number=loc.line_number or server.line_number or 1,
+                                excerpt=loc.path,
+                                command="nginx -T",
+                            )],
+                            treatment=(
+                                "Restrict access to this path (authentication, IP allowlist, remove if unused)."
+                            ),
+                            impact=[
+                                "Administrative or debug interface reachable from clients",
+                            ],
+                        ))
+                        break
+        return findings
 
     def _check_php_in_uploads(self, info: "NginxInfo | None") -> list[Finding]:
         """NGX-SEC-4: Check if PHP execution is supposedly blocked in uploads."""
@@ -274,6 +341,11 @@ class SecurityAuditor(BaseCheck):
                         "Remove PHP execution from upload directories.\n"
                         "Ensure: location ... { try_files $uri =404; }"
                     ),
+                    fix_commands=[
+                        f"# Edit {location.source_file or info.config_path} and remove fastcgi_pass from {location.path}",
+                        f"# Replace with: try_files $uri =404;",
+                        "nginx -t && systemctl reload nginx"
+                    ],
                     impact=[
                         "Malicious PHP scripts uploaded by users can be executed",
                         "Full server compromise (webshell risks)",
