@@ -61,7 +61,7 @@ async def start_daemon(request: DaemonStartRequest) -> dict[str, Any]:
     server_names = None
     if request.server_ids:
         server_repo = ServerRepository()
-        servers = [server_repo.get(sid) for sid in request.server_ids]
+        servers = [server_repo.get_by_id(sid) for sid in request.server_ids]
         server_names = [s.name for s in servers if s]
     
     daemon_instance = MonitoringDaemon(
