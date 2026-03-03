@@ -13,6 +13,7 @@ from pydantic import BaseModel, Field
 
 from nginx_doctor.daemon.monitor import MonitoringDaemon
 from nginx_doctor.config import ConfigManager
+from nginx_doctor.connector.ssh import SSHConfig
 from nginx_doctor.storage.repositories import ServerRepository
 
 router = APIRouter(prefix="/daemon", tags=["daemon"])
@@ -65,10 +66,29 @@ async def start_daemon(request: DaemonStartRequest) -> dict[str, Any]:
     # Get server names from IDs
     config_mgr = ConfigManager()
     server_names = None
+    server_repo = ServerRepository()
+    servers = None
     if request.server_ids:
-        server_repo = ServerRepository()
         servers = [server_repo.get_by_id(sid) for sid in request.server_ids]
-        server_names = [s.name for s in servers if s]
+        servers = [s for s in servers if s]
+    else:
+        servers = server_repo.get_all()
+
+    server_names = [s.name for s in servers]
+
+    # Sync web server records into ConfigManager profiles so the daemon can load them
+    for s in servers:
+        config_mgr.add_profile(
+            s.name,
+            SSHConfig(
+                host=s.host,
+                user=s.username,
+                port=s.port,
+                key_path=s.key_path,
+                use_sudo=True,
+                password=s.password,
+            ),
+        )
     
     daemon_instance = MonitoringDaemon(
         config_mgr=config_mgr,
