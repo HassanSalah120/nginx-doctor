@@ -103,6 +103,10 @@ class PerformanceAuditor(BaseCheck):
                         command="",
                     )],
                     treatment="Enable HTTP/2:\n    listen 443 ssl http2;",
+                    fix_commands=[
+                        f"sed -i 's/listen 443 ssl;/listen 443 ssl http2;/g' {server.source_file or '/etc/nginx/nginx.conf'}",
+                        "nginx -t && systemctl reload nginx"
+                    ],
                     impact=[
                         "Slower performance on modern browsers",
                         "Missing multiplexing benefits",
@@ -168,6 +172,10 @@ class PerformanceAuditor(BaseCheck):
                         command="",
                     )],
                     treatment="Set 'worker_processes auto;' to use all CPU cores.",
+                    fix_commands=[
+                        "sed -i 's/worker_processes.*/worker_processes auto;/g' /etc/nginx/nginx.conf",
+                        "nginx -t && systemctl reload nginx"
+                    ],
                     impact=["Nginx may not utilize all available CPU resources"],
                  ))
         

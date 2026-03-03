@@ -30,6 +30,7 @@ class Finding:
     derived_from: str | None = None
     evidence: list[Evidence] = field(default_factory=list)
     treatment: str = ""
+    fix_commands: list[str] = field(default_factory=list)  # One-click fix commands
     impact: list[str] = field(default_factory=list)
     correlation: list = field(default_factory=list)  # list[CorrelationEvidence]
 
