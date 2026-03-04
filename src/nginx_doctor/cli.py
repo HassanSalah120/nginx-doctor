@@ -1090,12 +1090,12 @@ def web(port: int, host: str) -> None:
     
     Then open: http://127.0.0.1:8765/wizard
     """
-    console.print("[bold cyan]🚀 nginx-doctor Project Setup Wizard[/]")
+    console.print("[bold cyan]nginx-doctor Project Setup Wizard[/]")
     console.print()
     
     # Security: Force localhost binding
     if host != "127.0.0.1":
-        console.print("[yellow]⚠️  Security: Forcing bind to 127.0.0.1 (localhost only)[/]")
+        console.print("[yellow]Security: Forcing bind to 127.0.0.1 (localhost only)[/]")
         host = "127.0.0.1"
     
     console.print(f"[bold]Starting server at:[/] http://{host}:{port}/wizard")
