@@ -166,10 +166,10 @@ def run_server(host: str = "127.0.0.1", port: int = 8765) -> None:
     
     # Security: Force localhost binding
     if host != "127.0.0.1":
-        print("⚠️  Security: Forcing bind to 127.0.0.1 (localhost only)")
+        print("Security: Forcing bind to 127.0.0.1 (localhost only)")
         host = "127.0.0.1"
     
-    print(f"🚀 Starting nginx-doctor wizard at http://{host}:{port}/wizard")
+    print(f"Starting nginx-doctor wizard at http://{host}:{port}/wizard")
     uvicorn.run(create_app(), host=host, port=port, log_level="info")
 
 
