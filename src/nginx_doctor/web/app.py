@@ -9,11 +9,11 @@ import secrets
 from pathlib import Path
 from typing import Any
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse
 
 from nginx_doctor.web.routes import connect, preview, apply, jobs, status
 from nginx_doctor.web.routes import servers as servers_route
@@ -26,6 +26,7 @@ from nginx_doctor.web.session import session_store
 WEB_DIR = Path(__file__).parent
 STATIC_DIR = WEB_DIR / "static"
 TEMPLATES_DIR = WEB_DIR / "templates"
+SPA_INDEX = STATIC_DIR / "spa" / "index.html"
 
 
 def create_app() -> FastAPI:
@@ -54,6 +55,14 @@ def create_app() -> FastAPI:
     # Templates
     templates = Jinja2Templates(directory=TEMPLATES_DIR)
 
+    def _serve_spa_or_template(request: Request, template_name: str, context: dict[str, Any] | None = None) -> Any:
+        if SPA_INDEX.exists():
+            return FileResponse(SPA_INDEX)
+        payload: dict[str, Any] = {"request": request}
+        if context:
+            payload.update(context)
+        return templates.TemplateResponse(template_name, payload)
+
     # Include API routers
     app.include_router(connect.router, prefix="/api", tags=["connection"])
     app.include_router(preview.router, prefix="/api", tags=["preview"])
@@ -75,51 +84,57 @@ def create_app() -> FastAPI:
     @app.get("/wizard", response_class=HTMLResponse)
     async def wizard_page(request: Request) -> Any:
         """Render the main wizard page."""
-        return templates.TemplateResponse("wizard.html", {"request": request})
+        return _serve_spa_or_template(request, "wizard.html")
 
     @app.get("/", response_class=HTMLResponse)
     async def root(request: Request) -> Any:
         """Dashboard — main landing page."""
-        return templates.TemplateResponse("dashboard.html", {"request": request})
+        return _serve_spa_or_template(request, "dashboard.html")
 
     @app.get("/servers", response_class=HTMLResponse)
     async def servers_page(request: Request) -> Any:
         """Server management page."""
-        return templates.TemplateResponse("servers.html", {"request": request})
+        return _serve_spa_or_template(request, "servers.html")
 
     @app.get("/jobs", response_class=HTMLResponse)
     async def jobs_page(request: Request) -> Any:
         """Scan jobs list page."""
-        return templates.TemplateResponse("jobs.html", {"request": request})
+        return _serve_spa_or_template(request, "jobs.html")
 
     @app.get("/jobs/{job_id}", response_class=HTMLResponse)
     async def job_detail_page(request: Request, job_id: int) -> Any:
         """Individual job detail and live log page."""
-        return templates.TemplateResponse(
-            "job_detail.html", {"request": request, "job_id": job_id}
-        )
+        return _serve_spa_or_template(request, "job_detail.html", {"job_id": job_id})
 
     @app.get("/reports/{job_id}", response_class=HTMLResponse)
     async def report_page(request: Request, job_id: int) -> Any:
         """Scan report page."""
-        return templates.TemplateResponse(
-            "report.html", {"request": request, "job_id": job_id}
-        )
+        return _serve_spa_or_template(request, "report.html", {"job_id": job_id})
     
     @app.get("/settings/integrations", response_class=HTMLResponse)
     async def integrations_page(request: Request) -> Any:
         """Integrations and notifications settings page."""
-        return templates.TemplateResponse("integrations.html", {"request": request})
+        return _serve_spa_or_template(request, "integrations.html")
     
     @app.get("/settings/daemon", response_class=HTMLResponse)
     async def daemon_settings_page(request: Request) -> Any:
         """Daemon monitoring settings page."""
-        return templates.TemplateResponse("daemon.html", {"request": request})
+        return _serve_spa_or_template(request, "daemon.html")
     
     @app.get("/kubernetes", response_class=HTMLResponse)
     async def kubernetes_page(request: Request) -> Any:
         """Kubernetes analyzer page."""
-        return templates.TemplateResponse("kubernetes.html", {"request": request})
+        return _serve_spa_or_template(request, "kubernetes.html")
+
+    @app.get("/{path:path}", include_in_schema=False)
+    async def spa_fallback(request: Request, path: str) -> Any:
+        if not SPA_INDEX.exists():
+            raise HTTPException(status_code=404, detail="Not found")
+        if path.startswith("api/") or path.startswith("static/"):
+            raise HTTPException(status_code=404, detail="Not found")
+        if path in ("favicon.ico",):
+            raise HTTPException(status_code=404, detail="Not found")
+        return FileResponse(SPA_INDEX)
 
     @app.on_event("startup")
     async def startup() -> None:
