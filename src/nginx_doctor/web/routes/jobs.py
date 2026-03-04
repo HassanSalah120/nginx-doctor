@@ -34,6 +34,15 @@ class JobResponse(BaseModel):
     completed_at: str | None
 
 
+@router.get("/jobs")
+async def list_jobs() -> dict:
+    """List all scan jobs."""
+    from nginx_doctor.storage.repositories import ScanJobRepository
+    repo = ScanJobRepository()
+    jobs = repo.get_all()
+    return {"jobs": [job.to_dict() if hasattr(job, 'to_dict') else job for job in jobs]}
+
+
 @router.get("/jobs/{job_id}", response_model=JobResponse)
 async def get_job_status(job_id: str) -> JobResponse:
     """Get job status and logs.
