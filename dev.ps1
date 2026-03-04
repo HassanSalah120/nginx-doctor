@@ -57,9 +57,12 @@ Write-Host "Starting React dev server (Vite) ..."
 $ui = Start-Process -FilePath $npmExe -ArgumentList @('run','dev') -WorkingDirectory $webUi -PassThru -RedirectStandardOutput $uiOut -RedirectStandardError $uiErr
 
 Write-Host ""
-Write-Host "Dev stack is running:" 
-Write-Host "- FastAPI: http://127.0.0.1:8765" 
-Write-Host "- Vite UI: shown in the Vite output window" 
+Write-Host "Dev stack is running:" -ForegroundColor Green
+Write-Host "- FastAPI: http://127.0.0.1:8765 (API only)"
+Write-Host "- React UI: http://localhost:5173 (development)" -ForegroundColor Cyan
+Write-Host ""
+Write-Host "IMPORTANT: Open http://localhost:5173 for development (live reload)"
+Write-Host "API endpoints are at http://127.0.0.1:8765/api/"
 Write-Host ""
 Write-Host "Press Ctrl+C to stop both." 
 
