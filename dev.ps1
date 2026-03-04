@@ -40,11 +40,21 @@ try {
     $npmExe = (Get-Command npm -ErrorAction Stop).Source
 }
 
+$apiOut = Join-Path $root '.dev-api.out.log'
+$apiErr = Join-Path $root '.dev-api.err.log'
+$uiOut = Join-Path $root '.dev-ui.out.log'
+$uiErr = Join-Path $root '.dev-ui.err.log'
+
+"" | Out-File -FilePath $apiOut -Encoding utf8
+"" | Out-File -FilePath $apiErr -Encoding utf8
+"" | Out-File -FilePath $uiOut -Encoding utf8
+"" | Out-File -FilePath $uiErr -Encoding utf8
+
 Write-Host "Starting FastAPI on http://127.0.0.1:8765 ..."
-$api = Start-Process -FilePath $pythonExe -ArgumentList @('-m','nginx_doctor','web','--port','8765') -WorkingDirectory $root -PassThru
+$api = Start-Process -FilePath $pythonExe -ArgumentList @('-m','nginx_doctor','web','--port','8765') -WorkingDirectory $root -PassThru -RedirectStandardOutput $apiOut -RedirectStandardError $apiErr
 
 Write-Host "Starting React dev server (Vite) ..."
-$ui = Start-Process -FilePath $npmExe -ArgumentList @('run','dev') -WorkingDirectory $webUi -PassThru
+$ui = Start-Process -FilePath $npmExe -ArgumentList @('run','dev') -WorkingDirectory $webUi -PassThru -RedirectStandardOutput $uiOut -RedirectStandardError $uiErr
 
 Write-Host ""
 Write-Host "Dev stack is running:" 
@@ -59,6 +69,14 @@ try {
 
         if ($api.HasExited) {
             Write-Host "FastAPI process exited." -ForegroundColor Red
+            if (Test-Path $apiErr) {
+                Write-Host "--- FastAPI stderr (tail) ---" -ForegroundColor Yellow
+                Get-Content -Path $apiErr -Tail 60 | ForEach-Object { Write-Host $_ }
+            }
+            if (Test-Path $apiOut) {
+                Write-Host "--- FastAPI stdout (tail) ---" -ForegroundColor Yellow
+                Get-Content -Path $apiOut -Tail 60 | ForEach-Object { Write-Host $_ }
+            }
             break
         }
 
