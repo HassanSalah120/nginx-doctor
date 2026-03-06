@@ -7,8 +7,9 @@ import json
 import logging
 import os
 import signal
+import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -37,12 +38,20 @@ class MonitoringDaemon:
         self.log_file = log_file
         self.running = False
         self.notifier = NotificationManager(self.config_mgr)
-        
+        self._state_lock = threading.Lock()
+
         # State tracking per server
         self.previous_findings: dict[str, list[dict]] = {}
-        
+        self.started_at: str | None = None
+        self.last_scan: str | None = None
+        self.next_scan: str | None = None
+        self.scan_count: int = 0
+        self.error_count: int = 0
+        self.history: list[dict[str, Any]] = []
+
         # Setup logging
         self._setup_logging()
+        self._load_state()
     
     def _setup_logging(self) -> None:
         """Configure logging for daemon mode."""
@@ -62,7 +71,10 @@ class MonitoringDaemon:
         if self.is_running():
             logger.error("Daemon is already running")
             raise RuntimeError("Daemon is already running")
-        
+
+        self.started_at = datetime.utcnow().isoformat()
+        self.next_scan = self.started_at
+        self._save_state()
         self._write_pid()
         self.running = True
         
@@ -89,16 +101,33 @@ class MonitoringDaemon:
         """Main daemon loop."""
         while self.running:
             start_time = time.time()
-            
+            cycle_started = datetime.utcnow()
+
             try:
                 self._run_scan_cycle()
             except Exception as e:
                 logger.exception("Scan cycle failed")
-            
+                self.error_count += 1
+                self._append_history(
+                    {
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "server": "daemon",
+                        "status": "error",
+                        "message": str(e),
+                    }
+                )
+                self._save_state()
+
             # Calculate sleep time
             elapsed = time.time() - start_time
             sleep_time = max(0, self.interval - elapsed)
-            
+            self.last_scan = cycle_started.isoformat()
+            if self.running:
+                self.next_scan = (datetime.utcnow() + timedelta(seconds=sleep_time)).isoformat()
+            else:
+                self.next_scan = None
+            self._save_state()
+
             if self.running and sleep_time > 0:
                 logger.debug(f"Sleeping for {sleep_time}s")
                 time.sleep(sleep_time)
@@ -130,6 +159,16 @@ class MonitoringDaemon:
         cfg = self.config_mgr.load_profile(server_name)
         if not cfg:
             logger.warning(f"No config found for {server_name}")
+            self.error_count += 1
+            self._append_history(
+                {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "server": server_name,
+                    "status": "error",
+                    "message": "No config found",
+                }
+            )
+            self._save_state()
             return
         
         # Run scan
@@ -140,8 +179,18 @@ class MonitoringDaemon:
                 findings = _run_full_scan(ssh, cfg, timeout=300)
         except Exception as e:
             logger.error(f"Scan failed for {server_name}: {e}")
+            self.error_count += 1
+            self._append_history(
+                {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "server": server_name,
+                    "status": "error",
+                    "message": f"Scan failed: {e}",
+                }
+            )
+            self._save_state()
             return
-        
+
         # Convert to comparable format
         current = self._serialize_findings(findings)
         previous = self.previous_findings.get(server_name, [])
@@ -152,6 +201,18 @@ class MonitoringDaemon:
         
         # Update state
         self.previous_findings[server_name] = current
+        self.scan_count += 1
+        self.last_scan = datetime.utcnow().isoformat()
+        self._append_history(
+            {
+                "timestamp": self.last_scan,
+                "server": server_name,
+                "status": "success",
+                "new_findings": len(new_findings),
+                "resolved_findings": len(resolved_findings),
+                "findings_total": len(current),
+            }
+        )
         
         # Save state to disk
         self._save_state()
@@ -164,6 +225,12 @@ class MonitoringDaemon:
             self._notify_changes(server_name, new_findings, resolved_findings)
         else:
             logger.debug(f"{server_name}: No changes detected")
+
+    def _append_history(self, event: dict[str, Any]) -> None:
+        self.history.append(event)
+        # Keep bounded daemon history.
+        if len(self.history) > 500:
+            self.history = self.history[-500:]
     
     def _serialize_findings(self, findings: list) -> list[dict]:
         """Serialize findings to comparable format."""
@@ -232,13 +299,22 @@ class MonitoringDaemon:
     
     def _save_state(self) -> None:
         """Save daemon state to disk."""
-        state = {
-            "previous_findings": self.previous_findings,
-            "last_update": datetime.utcnow().isoformat(),
-        }
-        
-        state_file = Path(self.pid_file).parent / "nginx-doctor-state.json"
-        state_file.write_text(json.dumps(state, indent=2))
+        with self._state_lock:
+            state = {
+                "previous_findings": self.previous_findings,
+                "started_at": self.started_at,
+                "last_scan": self.last_scan,
+                "next_scan": self.next_scan,
+                "scan_count": self.scan_count,
+                "error_count": self.error_count,
+                "history": self.history,
+                "last_update": datetime.utcnow().isoformat(),
+                "interval": self.interval,
+                "servers": self.servers or "all",
+            }
+
+            state_file = Path(self.pid_file).parent / "nginx-doctor-state.json"
+            state_file.write_text(json.dumps(state, indent=2))
     
     def _load_state(self) -> None:
         """Load daemon state from disk."""
@@ -246,8 +322,24 @@ class MonitoringDaemon:
         
         if state_file.exists():
             try:
-                state = json.loads(state_file.read_text())
-                self.previous_findings = state.get("previous_findings", {})
+                with self._state_lock:
+                    state = json.loads(state_file.read_text())
+                    self.previous_findings = state.get("previous_findings", {})
+                    self.started_at = state.get("started_at")
+                    self.last_scan = state.get("last_scan")
+                    self.next_scan = state.get("next_scan")
+                    self.scan_count = int(state.get("scan_count", 0) or 0)
+                    self.error_count = int(state.get("error_count", 0) or 0)
+                    interval_val = state.get("interval")
+                    if isinstance(interval_val, int) and interval_val > 0:
+                        self.interval = interval_val
+                    servers_val = state.get("servers")
+                    if isinstance(servers_val, list):
+                        self.servers = [str(s) for s in servers_val]
+                    elif servers_val == "all":
+                        self.servers = None
+                    raw_history = state.get("history") or []
+                    self.history = raw_history if isinstance(raw_history, list) else []
             except Exception as e:
                 logger.warning(f"Failed to load state: {e}")
     
@@ -255,6 +347,8 @@ class MonitoringDaemon:
         """Stop the daemon."""
         logger.info("Stopping daemon...")
         self.running = False
+        self.next_scan = None
+        self._save_state()
         self._cleanup()
     
     def _cleanup(self) -> None:
@@ -285,6 +379,7 @@ class MonitoringDaemon:
 
         Note: this does not guarantee the daemon loop is healthy, only that the PID exists.
         """
+        self._load_state()
         pid_file = Path(self.pid_file)
         pid: int | None = None
         if pid_file.exists():
@@ -297,7 +392,19 @@ class MonitoringDaemon:
             "pid": pid,
             "servers": self.servers or "all",
             "interval": self.interval,
+            "started_at": self.started_at,
+            "last_scan": self.last_scan,
+            "next_scan": self.next_scan,
+            "scan_count": self.scan_count,
+            "error_count": self.error_count,
         }
+
+    def get_history(self, limit: int = 10) -> list[dict[str, Any]]:
+        """Get recent daemon scan/activity history."""
+        self._load_state()
+        if limit <= 0:
+            return []
+        return list(reversed(self.history[-limit:]))
     
     def is_running(self) -> bool:
         """Check if daemon is running."""

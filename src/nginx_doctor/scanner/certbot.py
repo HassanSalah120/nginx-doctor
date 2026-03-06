@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 
 from nginx_doctor.connector.ssh import SSHConnector
@@ -13,6 +14,11 @@ class CertbotScanner:
 
     def __init__(self, ssh: SSHConnector) -> None:
         self.ssh = ssh
+
+    @staticmethod
+    def _dry_run_enabled() -> bool:
+        value = (os.getenv("NGINX_DOCTOR_CERTBOT_DRY_RUN") or "0").strip().lower()
+        return value in {"1", "true", "yes", "on"}
 
     def scan(self, nginx_info: NginxInfo | None) -> CertbotModel:
         certbot = CertbotModel()
@@ -26,10 +32,15 @@ class CertbotScanner:
                 "systemctl status certbot.service certbot.timer --no-pager -n 80 2>&1 || true",
                 timeout=8,
             ).stdout.strip()
-            certbot.renew_dry_run_output = self.ssh.run(
-                "certbot renew --dry-run 2>&1 || true",
-                timeout=25,
-            ).stdout.strip()
+            if self._dry_run_enabled():
+                certbot.renew_dry_run_output = self.ssh.run(
+                    "certbot renew --dry-run 2>&1 || true",
+                    timeout=25,
+                ).stdout.strip()
+            else:
+                certbot.renew_dry_run_output = (
+                    "skipped (set NGINX_DOCTOR_CERTBOT_DRY_RUN=1 to enable certbot renew --dry-run)"
+                )
             certbot.journal_output = self.ssh.run(
                 "journalctl -u certbot.service -n 120 --no-pager 2>&1 || true",
                 timeout=8,

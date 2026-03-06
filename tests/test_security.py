@@ -75,3 +75,205 @@ def test_security_audit_findings():
     findings = auditor.run(ctx)
     sens_findings = [f for f in findings if f.id == 'NGX-SENS-1']
     assert any(f.severity == Severity.CRITICAL for f in sens_findings)
+
+
+def test_sensitive_admin_path_with_ip_allowlist_is_not_flagged():
+    """NGX-SENS-1 should not fire when /admin is explicitly IP-restricted."""
+    auditor = SecurityAuditor()
+
+    admin_loc = LocationBlock(
+        path="/admin/",
+        source_file="/etc/nginx/conf.d/default.conf",
+        line_number=100,
+        allow_rules=["127.0.0.1", "::1"],
+        deny_rules=["all"],
+    )
+    server = ServerBlock(
+        server_names=["vote.schmobinquiz.de"],
+        listen=["443 ssl"],
+        locations=[admin_loc],
+        source_file="/etc/nginx/conf.d/default.conf",
+        line_number=1,
+    )
+    model = ServerModel(
+        hostname="vote.schmobinquiz.de",
+        nginx=NginxInfo(
+            version="1.29.3",
+            config_path="/etc/nginx/nginx.conf",
+            servers=[server],
+        ),
+    )
+    ctx = CheckContext(model=model, ssh=None)
+
+    findings = auditor.run(ctx)
+    assert "NGX-SENS-1" not in {f.id for f in findings}
+
+
+def test_sensitive_admin_path_inherits_server_access_rules():
+    """NGX-SENS-1 should not fire when server-level allow/deny already restricts access."""
+    auditor = SecurityAuditor()
+
+    admin_loc = LocationBlock(
+        path="/admin/",
+        source_file="/etc/nginx/conf.d/default.conf",
+        line_number=120,
+    )
+    server = ServerBlock(
+        server_names=["vote.schmobinquiz.de"],
+        listen=["443 ssl"],
+        locations=[admin_loc],
+        allow_rules=["127.0.0.1", "::1"],
+        deny_rules=["all"],
+        source_file="/etc/nginx/conf.d/default.conf",
+        line_number=1,
+    )
+    model = ServerModel(
+        hostname="vote.schmobinquiz.de",
+        nginx=NginxInfo(
+            version="1.29.3",
+            config_path="/etc/nginx/nginx.conf",
+            servers=[server],
+        ),
+    )
+    ctx = CheckContext(model=model, ssh=None)
+
+    findings = auditor.run(ctx)
+    assert "NGX-SENS-1" not in {f.id for f in findings}
+
+
+def test_sensitive_admin_path_with_include_allow_deny_is_not_flagged():
+    """NGX-SENS-1 should not fire when allow/deny are provided through include files."""
+    auditor = SecurityAuditor()
+
+    admin_loc = LocationBlock(
+        path="/admin/",
+        source_file="/etc/nginx/conf.d/default.conf",
+        line_number=130,
+        include_files=["/etc/nginx/conf.d/admin_acl.inc"],
+    )
+    server = ServerBlock(
+        server_names=["localhost"],
+        listen=["443 ssl"],
+        locations=[admin_loc],
+        source_file="/etc/nginx/conf.d/default.conf",
+        line_number=1,
+    )
+    nginx = NginxInfo(
+        version="1.29.3",
+        config_path="/etc/nginx/nginx.conf",
+        servers=[server],
+    )
+    nginx.virtual_files["/etc/nginx/conf.d/admin_acl.inc"] = """
+allow 127.0.0.1;
+allow ::1;
+deny all;
+"""
+
+    model = ServerModel(hostname="localhost", nginx=nginx)
+    ctx = CheckContext(model=model, ssh=None)
+
+    findings = auditor.run(ctx)
+    assert "NGX-SENS-1" not in {f.id for f in findings}
+
+
+def test_sensitive_admin_path_with_auth_basic_is_not_flagged():
+    """NGX-SENS-1 should not fire when location is protected by basic auth."""
+    auditor = SecurityAuditor()
+
+    admin_loc = LocationBlock(
+        path="/admin/",
+        source_file="/etc/nginx/conf.d/default.conf",
+        line_number=140,
+        auth_basic='"Restricted"',
+    )
+    server = ServerBlock(
+        server_names=["vote.schmobinquiz.de"],
+        listen=["443 ssl"],
+        locations=[admin_loc],
+        source_file="/etc/nginx/conf.d/default.conf",
+        line_number=1,
+    )
+    model = ServerModel(
+        hostname="vote.schmobinquiz.de",
+        nginx=NginxInfo(
+            version="1.29.3",
+            config_path="/etc/nginx/nginx.conf",
+            servers=[server],
+        ),
+    )
+    ctx = CheckContext(model=model, ssh=None)
+
+    findings = auditor.run(ctx)
+    assert "NGX-SENS-1" not in {f.id for f in findings}
+
+
+def test_security_headers_from_include_are_respected():
+    """SEC-HEAD-1 should account for add_header directives in included files."""
+    auditor = SecurityAuditor()
+
+    health_loc = LocationBlock(
+        path="/health",
+        source_file="/etc/nginx/conf.d/default.conf",
+        line_number=200,
+        headers={"Content-Type": "text/plain"},
+        include_files=["/etc/nginx/conf.d/security_headers.inc"],
+    )
+    server = ServerBlock(
+        server_names=["vote.schmobinquiz.de"],
+        listen=["443 ssl"],
+        locations=[health_loc],
+        source_file="/etc/nginx/conf.d/default.conf",
+        line_number=1,
+    )
+    nginx = NginxInfo(
+        version="1.29.3",
+        config_path="/etc/nginx/nginx.conf",
+        servers=[server],
+    )
+    nginx.virtual_files["/etc/nginx/conf.d/security_headers.inc"] = """
+add_header X-Frame-Options "DENY" always;
+add_header X-Content-Type-Options "nosniff" always;
+add_header Referrer-Policy "strict-origin-when-cross-origin" always;
+"""
+
+    model = ServerModel(hostname="vote.schmobinquiz.de", nginx=nginx)
+    ctx = CheckContext(model=model, ssh=None)
+
+    findings = auditor.run(ctx)
+    assert "SEC-HEAD-1" not in {f.id for f in findings}
+
+
+def test_security_headers_respect_add_header_inherit_merge():
+    """SEC-HEAD-1 should not fire when location uses add_header_inherit merge."""
+    auditor = SecurityAuditor()
+
+    health_loc = LocationBlock(
+        path="/health",
+        source_file="/etc/nginx/conf.d/default.conf",
+        line_number=210,
+        headers={"Content-Type": "text/plain"},
+        add_header_inherit="merge",
+    )
+    server = ServerBlock(
+        server_names=["vote.schmobinquiz.de"],
+        listen=["443 ssl"],
+        headers={
+            "X-Frame-Options": '"DENY" always',
+            "X-Content-Type-Options": '"nosniff" always',
+            "Referrer-Policy": '"strict-origin-when-cross-origin" always',
+        },
+        locations=[health_loc],
+        source_file="/etc/nginx/conf.d/default.conf",
+        line_number=1,
+    )
+    nginx = NginxInfo(
+        version="1.29.3",
+        config_path="/etc/nginx/nginx.conf",
+        servers=[server],
+    )
+
+    model = ServerModel(hostname="vote.schmobinquiz.de", nginx=nginx)
+    ctx = CheckContext(model=model, ssh=None)
+
+    findings = auditor.run(ctx)
+    assert "SEC-HEAD-1" not in {f.id for f in findings}

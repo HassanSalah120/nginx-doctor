@@ -7,6 +7,7 @@ import JobsPage from './pages/JobsPage'
 import DaemonPage from './pages/DaemonPage'
 import IntegrationsPage from './pages/IntegrationsPage'
 import KubernetesPage from './pages/KubernetesPage'
+import ReportPage from './pages/ReportPage'
 import PlaceholderPage from './pages/PlaceholderPage'
 
 export const router = createBrowserRouter([
@@ -17,7 +18,7 @@ export const router = createBrowserRouter([
       { path: '/servers', element: <ServersPage /> },
       { path: '/jobs', element: <JobsPage /> },
       { path: '/jobs/:jobId', element: <PlaceholderPage title="Job Details" /> },
-      { path: '/reports/:jobId', element: <PlaceholderPage title="Report" /> },
+      { path: '/reports/:jobId', element: <ReportPage /> },
       {
         path: '/settings/integrations',
         element: <IntegrationsPage />,

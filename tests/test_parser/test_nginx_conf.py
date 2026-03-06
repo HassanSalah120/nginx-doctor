@@ -73,3 +73,66 @@ class TestNginxConfigParser:
         info = parser.parse(sample_nginx_t_output)
         
         assert len(info.includes) > 0
+
+    def test_parse_location_allow_deny_and_include(self):
+        parser = NginxConfigParser()
+        nginx_t = """# configuration file /etc/nginx/conf.d/default.conf:
+server {
+    listen 443 ssl;
+    location /admin/ {
+        allow 127.0.0.1;
+        deny all;
+        include /etc/nginx/conf.d/security_headers.inc;
+    }
+}
+"""
+        info = parser.parse(nginx_t)
+        assert len(info.servers) == 1
+        assert len(info.servers[0].locations) == 1
+        loc = info.servers[0].locations[0]
+        assert "127.0.0.1" in loc.allow_rules
+        assert "all" in loc.deny_rules
+        assert "/etc/nginx/conf.d/security_headers.inc" in loc.include_files
+
+    def test_parse_server_level_http2_and_access_rules(self):
+        parser = NginxConfigParser()
+        nginx_t = """# configuration file /etc/nginx/conf.d/default.conf:
+server {
+    listen 443 ssl;
+    http2 on;
+    allow 127.0.0.1;
+    deny all;
+}
+"""
+        info = parser.parse(nginx_t)
+        assert len(info.servers) == 1
+        server = info.servers[0]
+        assert server.http2_enabled is True
+        assert "127.0.0.1" in server.allow_rules
+        assert "all" in server.deny_rules
+
+    def test_parse_auth_basic_and_add_header_inherit(self):
+        parser = NginxConfigParser()
+        nginx_t = """# configuration file /etc/nginx/nginx.conf:
+add_header_inherit merge;
+# configuration file /etc/nginx/conf.d/default.conf:
+server {
+    listen 443 ssl;
+    auth_basic "Restricted";
+    add_header_inherit off;
+    location /admin/ {
+        auth_basic off;
+        add_header_inherit merge;
+    }
+}
+"""
+        info = parser.parse(nginx_t)
+        assert info.http_add_header_inherit == "merge"
+        assert len(info.servers) == 1
+        server = info.servers[0]
+        assert server.auth_basic == '"Restricted"'
+        assert server.add_header_inherit == "off"
+        assert len(server.locations) == 1
+        loc = server.locations[0]
+        assert loc.auth_basic == "off"
+        assert loc.add_header_inherit == "merge"

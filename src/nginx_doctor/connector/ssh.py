@@ -6,7 +6,10 @@ commands and retrieving file contents.
 """
 
 from dataclasses import dataclass, field
+import os
 from pathlib import Path
+import threading
+import time
 from typing import Callable
 
 import paramiko
@@ -25,6 +28,9 @@ class SSHConfig:
     password: str | None = None  # Fallback, prefer keys
     use_sudo: bool = True
     timeout: int = 30
+    # Maximum number of concurrent exec_command calls for one SSH session.
+    # If None, NGINX_DOCTOR_SSH_MAX_PARALLEL (default: 1) is used.
+    max_parallel_commands: int | None = None
 
 
 @dataclass
@@ -59,6 +65,26 @@ class SSHConnector:
         """Initialize SSH connector with configuration."""
         self.config = config
         self._client: paramiko.SSHClient | None = None
+        configured_parallel = config.max_parallel_commands
+        if configured_parallel is None:
+            try:
+                configured_parallel = int(os.getenv("NGINX_DOCTOR_SSH_MAX_PARALLEL", "1"))
+            except ValueError:
+                configured_parallel = 1
+        self._max_parallel_commands = max(1, configured_parallel)
+        try:
+            retries = int(os.getenv("NGINX_DOCTOR_SSH_CHANNEL_RETRIES", "4"))
+        except ValueError:
+            retries = 4
+        self._channel_retries = max(0, retries)
+        try:
+            keepalive = int(os.getenv("NGINX_DOCTOR_SSH_KEEPALIVE_SEC", "20"))
+        except ValueError:
+            keepalive = 20
+        self._keepalive_seconds = max(0, keepalive)
+        # Allow bounded command concurrency while avoiding unbounded channel pressure.
+        self._run_semaphore = threading.BoundedSemaphore(self._max_parallel_commands)
+        self._reconnect_lock = threading.Lock()
 
     def connect(self) -> None:
         """Establish SSH connection."""
@@ -93,6 +119,9 @@ class SSHConnector:
 
         try:
             self._client.connect(**connect_kwargs)
+            transport = self._client.get_transport() if self._client else None
+            if transport and self._keepalive_seconds > 0:
+                transport.set_keepalive(self._keepalive_seconds)
         except PasswordRequiredException as e:
             raise ConnectionError(
                 "Authentication failed: encrypted private key requires a passphrase ("
@@ -145,34 +174,126 @@ class SSHConnector:
         if use_sudo is None:
             use_sudo = self.config.use_sudo
 
+        exec_command = command
+        should_write_password = False
         if use_sudo and self.config.user != "root":
+            # Always execute via shell under sudo so shell builtins/redirects/pipes/loops work.
+            # Never embed password in command text to avoid leaking secrets in logs/errors.
+            shell_wrapped = f"sh -lc {self._shell_quote(command)}"
             if self.config.password:
-                # Use -S to read password from stdin
-                command = f"echo '{self.config.password}' | sudo -S {command}"
+                exec_command = f"sudo -S -p '' {shell_wrapped}"
+                should_write_password = True
             else:
-                command = f"sudo {command}"
+                # -n prevents hanging on password prompt when no password is configured.
+                exec_command = f"sudo -n {shell_wrapped}"
         
         # Use provided timeout or default from config
         cmd_timeout = timeout if timeout is not None else self.config.timeout
 
+        attempts = 1 + self._channel_retries
+        last_error: Exception | None = None
+        for attempt in range(attempts):
+            stdin = None
+            stdout = None
+            stderr = None
+            channel = None
+            try:
+                with self._run_semaphore:
+                    client = self._client
+                    if client is None:
+                        raise SSHException("SSH client is not connected")
+
+                    stdin, stdout, stderr = client.exec_command(exec_command, timeout=cmd_timeout)
+                    channel = stdout.channel
+                    if should_write_password and self.config.password is not None:
+                        stdin.write(self.config.password + "\n")
+                        stdin.flush()
+                    exit_code = channel.recv_exit_status()
+                    stdout_text = stdout.read().decode("utf-8", errors="replace")
+                    stderr_text = stderr.read().decode("utf-8", errors="replace")
+
+                    return CommandResult(
+                        command=exec_command,
+                        stdout=stdout_text,
+                        stderr=stderr_text,
+                        exit_code=exit_code,
+                    )
+            except Exception as e:
+                last_error = e
+                if attempt < attempts - 1:
+                    if self._is_retriable_channel_error(e):
+                        # Avoid reconnect storms while other commands are in-flight.
+                        # Channel-open failures are often transient (MaxSessions pressure).
+                        if not self._transport_is_active():
+                            self._recover_transport()
+                        time.sleep(min(1.25, 0.20 * (attempt + 1)))
+                        continue
+                    if not self._transport_is_active():
+                        self._recover_transport()
+                        time.sleep(min(1.25, 0.20 * (attempt + 1)))
+                        continue
+                break
+            finally:
+                for stream in (stdin, stdout, stderr):
+                    try:
+                        if stream is not None:
+                            stream.close()
+                    except Exception:
+                        pass
+                try:
+                    if channel is not None:
+                        channel.close()
+                except Exception:
+                    pass
+
+        # Handle timeouts or other SSH errors gracefully
+        return CommandResult(
+            command=exec_command,
+            stdout="",
+            stderr=f"SSH Execution Error: {str(last_error) if last_error else 'unknown'}",
+            exit_code=255,
+        )
+
+    @staticmethod
+    def _shell_quote(value: str) -> str:
+        return "'" + value.replace("'", "'\"'\"'") + "'"
+
+    def _is_retriable_channel_error(self, exc: Exception) -> bool:
+        """Best-effort detection for transient SSH channel open failures."""
+        text = str(exc).lower()
+        if "channelexception" in text and "connect failed" in text:
+            return True
+        if "channel open failed" in text:
+            return True
+        if "administratively prohibited" in text:
+            return True
+        if isinstance(exc, SSHException) and "channel" in text and "failed" in text:
+            return True
+        return False
+
+    def _recover_transport(self) -> None:
+        """Best-effort session refresh after channel-open failures."""
+        with self._reconnect_lock:
+            try:
+                if self._client is None:
+                    self.connect()
+                    return
+                self.disconnect()
+                time.sleep(0.1)
+                self.connect()
+            except Exception:
+                # Keep retry loop resilient; final error will be surfaced by caller.
+                return
+
+    def _transport_is_active(self) -> bool:
+        client = self._client
+        if client is None:
+            return False
         try:
-            stdin, stdout, stderr = self._client.exec_command(command, timeout=cmd_timeout)
-            exit_code = stdout.channel.recv_exit_status()
-            
-            return CommandResult(
-                command=command,
-                stdout=stdout.read().decode("utf-8", errors="replace"),
-                stderr=stderr.read().decode("utf-8", errors="replace"),
-                exit_code=exit_code,
-            )
-        except Exception as e:
-            # Handle timeouts or other SSH errors gracefully
-            return CommandResult(
-                command=command,
-                stdout="",
-                stderr=f"SSH Execution Error: {str(e)}",
-                exit_code=255
-            )
+            transport = client.get_transport()
+        except Exception:
+            return False
+        return bool(transport and transport.is_active())
 
     def read_file(self, path: str) -> str | None:
         """Read file contents from remote server.

@@ -26,6 +26,17 @@ class ScanRequest(BaseModel):
     """Request body for starting a scan."""
 
     server_id: int = Field(..., description="ID of the server to scan")
+    devops_enabled: bool | None = Field(
+        default=None,
+        description="Deprecated: DevOps checks are always enabled.",
+    )
+    repo_scan_paths: str | None = Field(
+        default=None,
+        description=(
+            "Optional comma-separated repo paths for DevOps scanning "
+            "(e.g., /path/to/repo1,/path/to/repo2). If omitted, paths are auto-discovered."
+        ),
+    )
 
 
 @router.post("/scan")
@@ -38,7 +49,10 @@ async def start_scan(request: ScanRequest) -> dict:
 
     try:
         runner = get_runner()
-        job_id = runner.submit_scan(request.server_id)
+        job_id = runner.submit_scan(
+            request.server_id,
+            repo_scan_paths=request.repo_scan_paths,
+        )
         return {"job_id": job_id, "status": "queued"}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))

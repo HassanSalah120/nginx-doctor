@@ -124,6 +124,7 @@ class PlainReporter(BaseReporter):
                 )
         if model.security_baseline:
             b = model.security_baseline
+            pm = b.package_manager.upper() if b.package_manager else "OS"
             if b.ssh_permit_root_login is not None or b.ssh_password_authentication is not None:
                 self.console.print(
                     f"SSH: PermitRootLogin={b.ssh_permit_root_login or 'unknown'}, "
@@ -135,7 +136,7 @@ class PlainReporter(BaseReporter):
                     if b.pending_security_updates is not None
                     else ""
                 )
-                self.console.print(f"Updates: total={b.pending_updates_total}{sec_part}")
+                self.console.print(f"Updates ({pm}): total={b.pending_updates_total}{sec_part}")
             if b.reboot_required:
                 self.console.print("Reboot Required: yes")
         if model.vulnerability:

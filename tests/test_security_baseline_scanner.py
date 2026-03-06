@@ -54,6 +54,7 @@ curl/ubuntu-updates 7.68.0-1ubuntu2.24 amd64 [upgradable from: 7.68.0-1ubuntu2.2
     mock_ssh_connector.read_file.return_value = ""
 
     baseline = scanner.scan()
+    assert baseline.package_manager == "apt"
     assert baseline.pending_updates_total == 2
     assert baseline.pending_security_updates == 1
     assert baseline.reboot_required is True

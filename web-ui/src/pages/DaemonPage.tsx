@@ -1,16 +1,21 @@
 import { useEffect, useState } from 'react'
-import { api, type Server } from '../services/api'
+import { PageHeader } from '../components/PageHeader'
+import { buttonClass, inputClass, panelClass, tableShellClass } from '../components/ui/styles'
+import { api, type DaemonHistoryEntry, type DaemonStatus, type Server } from '../services/api'
 
 function StatusBadge({ running }: { running: boolean }) {
   return (
-    <span className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-medium ${running ? 'bg-green-500/20 text-green-400' : 'bg-slate-700 text-slate-400'}`}>
+    <span
+      className={`inline-flex items-center rounded-full px-3 py-1 text-sm font-medium ${running ? 'bg-green-500/20 text-green-400' : 'bg-slate-700 text-slate-300'}`}
+    >
       {running ? '● Running' : '○ Stopped'}
     </span>
   )
 }
 
 export default function DaemonPage() {
-  const [status, setStatus] = useState<{ running: boolean; pid: number | null; interval: number; servers: number[]; scan_count: number } | null>(null)
+  const [status, setStatus] = useState<DaemonStatus | null>(null)
+  const [history, setHistory] = useState<DaemonHistoryEntry[]>([])
   const [servers, setServers] = useState<Server[]>([])
   const [scanInterval, setScanInterval] = useState(3600)
   const [selectedServers, setSelectedServers] = useState<number[]>([])
@@ -31,11 +36,18 @@ export default function DaemonPage() {
 
   async function loadData() {
     try {
-      const [statusData, serversData] = await Promise.all([api.getDaemonStatus(), api.getServers()])
+      const [statusData, serversData, historyData] = await Promise.all([
+        api.getDaemonStatus(),
+        api.getServers(),
+        api.getDaemonHistory(25),
+      ])
       setStatus(statusData)
+      setHistory(historyData)
       setServers(serversData)
-      if (statusData.servers?.length > 0) {
+      if (Array.isArray(statusData.servers) && statusData.servers.length > 0) {
         setSelectedServers(statusData.servers)
+      } else if (statusData.running) {
+        setSelectedServers(serversData.map(s => s.id))
       }
       if (statusData.interval) {
         setScanInterval(statusData.interval)
@@ -45,6 +57,11 @@ export default function DaemonPage() {
     } finally {
       setLoading(false)
     }
+  }
+
+  function dismissMessages() {
+    setError(null)
+    setMessage(null)
   }
 
   async function handleStart() {
@@ -78,6 +95,7 @@ export default function DaemonPage() {
       setActionLoading(true)
       await api.triggerScan()
       setMessage('Scan triggered')
+      loadData()
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to trigger scan')
     } finally {
@@ -101,25 +119,56 @@ export default function DaemonPage() {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Daemon</h1>
-        <p className="text-sm text-slate-400">Background monitoring and scheduled scans</p>
-      </div>
+      <PageHeader
+        title="Daemon"
+        subtitle="Background monitoring and scheduled scans"
+        actions={
+          <button
+            type="button"
+            onClick={() => {
+              dismissMessages()
+              loadData()
+            }}
+            className={buttonClass({ variant: 'default', size: 'sm' })}
+          >
+            Refresh
+          </button>
+        }
+      />
 
       {message && (
         <div className="rounded-lg border border-green-800 bg-green-950/30 p-3 text-green-400">
-          {message}
+          <div className="flex items-start justify-between gap-3">
+            <div>{message}</div>
+            <button type="button" onClick={() => setMessage(null)} className="text-green-300/80 hover:text-green-200">
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
       {error && (
         <div className="rounded-lg border border-red-800 bg-red-950/30 p-3 text-red-400">
-          {error}
+          <div className="flex items-start justify-between gap-3">
+            <div>{error}</div>
+            <button type="button" onClick={() => setError(null)} className="text-red-300/80 hover:text-red-200">
+              Dismiss
+            </button>
+          </div>
+        </div>
+      )}
+
+      {!status?.running && (
+        <div className={panelClass()}>
+          <div className="text-sm text-slate-200">Daemon is not running</div>
+          <div className="mt-1 text-sm text-slate-400">
+            Start the daemon to enable scheduled scans. You can also trigger scans manually from the Servers page.
+          </div>
         </div>
       )}
 
       <div className="grid gap-4 md:grid-cols-2">
-        <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+        <div className={panelClass()}>
           <h3 className="font-medium">Status</h3>
           <div className="mt-4 flex items-center gap-4">
             <StatusBadge running={status?.running ?? false} />
@@ -134,34 +183,59 @@ export default function DaemonPage() {
               <span className="text-slate-400">Total Scans</span>
               <p className="font-medium">{status?.scan_count ?? 0}</p>
             </div>
+            <div>
+              <span className="text-slate-400">Last Scan</span>
+              <p className="font-medium">{status?.last_scan ? new Date(status.last_scan).toLocaleString() : '—'}</p>
+            </div>
+            <div>
+              <span className="text-slate-400">Next Scan</span>
+              <p className="font-medium">{status?.next_scan ? new Date(status.next_scan).toLocaleString() : '—'}</p>
+            </div>
+            <div>
+              <span className="text-slate-400">Started At</span>
+              <p className="font-medium">{status?.started_at ? new Date(status.started_at).toLocaleString() : '—'}</p>
+            </div>
+            <div>
+              <span className="text-slate-400">Errors</span>
+              <p className="font-medium">{status?.error_count ?? 0}</p>
+            </div>
           </div>
         </div>
 
-        <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+        <div className={panelClass()}>
           <h3 className="font-medium">Actions</h3>
-          <div className="mt-4 space-y-2">
+          <div className="mt-4 space-y-3">
             {status?.running ? (
               <>
                 <button
                   onClick={handleStop}
                   disabled={actionLoading}
-                  className="w-full rounded-md bg-red-600 px-4 py-2 text-sm font-medium text-white hover:bg-red-500 disabled:opacity-50"
+                  className={buttonClass({ variant: 'danger', size: 'md' }) + ' w-full'}
                 >
                   {actionLoading ? 'Stopping...' : 'Stop Daemon'}
                 </button>
-                <button
-                  onClick={handleScanNow}
-                  disabled={actionLoading}
-                  className="w-full rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
-                >
-                  {actionLoading ? 'Triggering...' : 'Scan Now'}
-                </button>
+
+                <div className={panelClass()}>
+                  <div className="flex items-center justify-between gap-3">
+                    <div>
+                      <div className="text-sm font-medium text-slate-200">Manual scan</div>
+                      <div className="mt-0.5 text-xs text-slate-500">Triggers a scan cycle for monitored servers.</div>
+                    </div>
+                    <button
+                      onClick={handleScanNow}
+                      disabled={actionLoading}
+                      className={buttonClass({ variant: 'primary', size: 'md' })}
+                    >
+                      {actionLoading ? 'Triggering...' : 'Scan Now'}
+                    </button>
+                  </div>
+                </div>
               </>
             ) : (
               <button
                 onClick={handleStart}
                 disabled={actionLoading || servers.length === 0}
-                className="w-full rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-500 disabled:opacity-50"
+                className={buttonClass({ variant: 'primary', size: 'md' }) + ' w-full'}
               >
                 {actionLoading ? 'Starting...' : 'Start Daemon'}
               </button>
@@ -170,19 +244,56 @@ export default function DaemonPage() {
         </div>
       </div>
 
-      <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+      <div className={panelClass()}>
         <h3 className="font-medium">Configuration</h3>
         <div className="mt-4 space-y-4">
           <div>
             <label className="block text-sm text-slate-400">Scan Interval (seconds)</label>
+
+            <div className="mt-2 flex flex-wrap gap-2">
+              <button
+                type="button"
+                onClick={() => setScanInterval(900)}
+                disabled={status?.running}
+                className={buttonClass({ variant: 'default', size: 'sm' })}
+              >
+                15m
+              </button>
+              <button
+                type="button"
+                onClick={() => setScanInterval(3600)}
+                disabled={status?.running}
+                className={buttonClass({ variant: 'default', size: 'sm' })}
+              >
+                1h
+              </button>
+              <button
+                type="button"
+                onClick={() => setScanInterval(21600)}
+                disabled={status?.running}
+                className={buttonClass({ variant: 'default', size: 'sm' })}
+              >
+                6h
+              </button>
+              <button
+                type="button"
+                onClick={() => setScanInterval(86400)}
+                disabled={status?.running}
+                className={buttonClass({ variant: 'default', size: 'sm' })}
+              >
+                24h
+              </button>
+            </div>
+
             <input
               type="number"
               value={scanInterval}
               onChange={e => setScanInterval(parseInt(e.target.value) || 3600)}
               disabled={status?.running}
-              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white disabled:opacity-50"
+              className={inputClass() + ' mt-1 disabled:opacity-50'}
               placeholder="3600"
             />
+            {status?.running && <div className="mt-1 text-xs text-slate-500">Stop the daemon to change configuration.</div>}
           </div>
 
           <div>
@@ -208,6 +319,43 @@ export default function DaemonPage() {
             </div>
           </div>
         </div>
+      </div>
+
+      <div className={panelClass()}>
+        <h3 className="font-medium">Recent Activity</h3>
+        {history.length === 0 ? (
+          <p className="mt-2 text-sm text-slate-500">No daemon activity recorded yet.</p>
+        ) : (
+          <div className="mt-4 overflow-x-auto">
+            <div className={tableShellClass()}>
+              <table className="w-full text-sm">
+                <thead className="bg-slate-800/50 text-slate-400">
+                <tr>
+                  <th className="px-3 py-2 text-left">Time</th>
+                  <th className="px-3 py-2 text-left">Server</th>
+                  <th className="px-3 py-2 text-left">Status</th>
+                  <th className="px-3 py-2 text-left">Summary</th>
+                </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800">
+                {history.map((entry, idx) => (
+                  <tr key={`${entry.timestamp}-${entry.server}-${idx}`} className="hover:bg-slate-800/30">
+                    <td className="px-3 py-2 text-slate-300">{new Date(entry.timestamp).toLocaleString()}</td>
+                    <td className="px-3 py-2 text-slate-200">{entry.server}</td>
+                    <td className={`px-3 py-2 ${entry.status === 'success' ? 'text-green-400' : 'text-red-400'}`}>{entry.status}</td>
+                    <td className="px-3 py-2 text-slate-400">
+                      {entry.message ||
+                        (entry.status === 'success'
+                          ? `${entry.new_findings ?? 0} new, ${entry.resolved_findings ?? 0} resolved, ${entry.findings_total ?? 0} total`
+                          : '—')}
+                    </td>
+                  </tr>
+                ))}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        )}
       </div>
     </div>
   )

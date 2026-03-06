@@ -102,11 +102,19 @@ async def _get_ingresses(analyzer: K8sAnalyzer) -> list[dict]:
             tls_hosts.extend(tls_entry.get("hosts", []))
         
         has_tls = all(h in tls_hosts for h in hosts if h)
+
+        issues: list[str] = []
+        if hosts and not has_tls:
+            issues.append("TLS is not configured for all hosts")
+        if not hosts:
+            issues.append("No host rules found")
+
+        host = hosts[0] if hosts else ""
         
         result.append({
             "name": name,
             "namespace": namespace,
-            "hosts": hosts,
+            "host": host,
             "tls_configured": has_tls,
             "annotations": {
                 k: v for k, v in annotations.items()
@@ -117,6 +125,7 @@ async def _get_ingresses(analyzer: K8sAnalyzer) -> list[dict]:
                 for r in rules
                 for p in r.get("http", {}).get("paths", [])
             ],
+            "issues": issues,
         })
     
     return result
@@ -142,6 +151,9 @@ async def _get_certificates(analyzer: K8sAnalyzer) -> list[dict]:
             c.get("type") == "Ready" and c.get("status") == "True"
             for c in status.get("conditions", [])
         )
+
+        expiry = status.get("notAfter") or status.get("renewalTime") or ""
+        cert_status = "Ready" if ready else "NotReady"
         
         result.append({
             "name": metadata.get("name", "unknown"),
@@ -150,6 +162,8 @@ async def _get_certificates(analyzer: K8sAnalyzer) -> list[dict]:
             "ready": ready,
             "issuer": spec.get("issuerRef", {}).get("name", ""),
             "renewal_time": status.get("renewalTime"),
+            "status": cert_status,
+            "expiry": expiry,
         })
     
     return result

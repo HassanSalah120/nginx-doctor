@@ -145,6 +145,10 @@ class NginxConfigParser:
                     if len(parts) >= 3:
                         # add_header Name Value;
                         info.http_headers[parts[1]] = parts[2]
+                elif stripped.startswith("add_header_inherit "):
+                    parts = stripped.rstrip(";").split(None, 1)
+                    if len(parts) == 2:
+                        info.http_add_header_inherit = parts[1].strip()
 
             # Track brace depth for context
             open_braces = stripped.count("{")
@@ -237,6 +241,8 @@ class NginxConfigParser:
                 server.listen.append(args)
                 if "ssl" in args.lower():
                     server.ssl_enabled = True
+            elif directive == "http2":
+                server.http2_enabled = args.strip().lower() == "on"
             elif directive == "root":
                 server.root = args.strip()
             elif directive == "autoindex":
@@ -251,6 +257,22 @@ class NginxConfigParser:
                 header_parts = args.split(None, 1)
                 if len(header_parts) == 2:
                     server.headers[header_parts[0]] = header_parts[1]
+            elif directive == "add_header_inherit":
+                server.add_header_inherit = args.strip()
+            elif directive == "auth_basic":
+                server.auth_basic = args.strip()
+            elif directive == "include":
+                include_path = args.strip()
+                if include_path:
+                    server.include_files.append(include_path)
+            elif directive == "allow":
+                rule = args.strip()
+                if rule:
+                    server.allow_rules.append(rule)
+            elif directive == "deny":
+                rule = args.strip()
+                if rule:
+                    server.deny_rules.append(rule)
         else:
             # Location-level directives
             if directive == "root":
@@ -267,6 +289,22 @@ class NginxConfigParser:
                 header_parts = args.split(None, 1)
                 if len(header_parts) == 2:
                     location.headers[header_parts[0]] = header_parts[1]
+            elif directive == "add_header_inherit":
+                location.add_header_inherit = args.strip()
+            elif directive == "auth_basic":
+                location.auth_basic = args.strip()
+            elif directive == "include":
+                include_path = args.strip()
+                if include_path:
+                    location.include_files.append(include_path)
+            elif directive == "allow":
+                rule = args.strip()
+                if rule:
+                    location.allow_rules.append(rule)
+            elif directive == "deny":
+                rule = args.strip()
+                if rule:
+                    location.deny_rules.append(rule)
             # WebSocket / Reverse Proxy directives
             elif directive == "proxy_http_version":
                 location.proxy_http_version = args.strip()

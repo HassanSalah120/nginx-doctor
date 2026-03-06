@@ -93,6 +93,7 @@ def test_telemetry_pressure_checks():
 def test_security_baseline_ssh_and_patch_checks():
     model = ServerModel(hostname="test")
     model.security_baseline = SecurityBaselineModel(
+        package_manager="apt",
         ssh_permit_root_login="yes",
         ssh_password_authentication="yes",
         pending_updates_total=123,
@@ -106,6 +107,22 @@ def test_security_baseline_ssh_and_patch_checks():
     assert "SSH-2" in ids
     assert "PATCH-1" in ids
     assert "PATCH-3" in ids
+    patch1 = next(f for f in findings if f.id == "PATCH-1")
+    assert "APT" in patch1.condition
+
+
+def test_security_baseline_patch2_mentions_package_manager_scope():
+    model = ServerModel(hostname="test")
+    model.security_baseline = SecurityBaselineModel(
+        package_manager="dnf",
+        pending_updates_total=77,
+        pending_security_updates=0,
+    )
+
+    findings = SecurityBaselineAuditor(model).audit()
+    patch2 = next(f for f in findings if f.id == "PATCH-2")
+    assert "DNF" in patch2.condition
+    assert "host OS package updates" in patch2.cause
 
 
 def test_docker_dev_port_public_without_firewall_is_critical():
@@ -158,7 +175,7 @@ def test_docker_public_proxied_non_ingress_is_warning():
     assert proxied_public[0].severity == Severity.WARNING
 
 
-def test_docker_ingress_https_on_nginx_container_is_info():
+def test_docker_ingress_https_on_nginx_container_is_not_reported_as_finding():
     model = ServerModel(hostname="test")
     model.services.docker = ServiceStatus(capability=CapabilityLevel.FULL, state=ServiceState.RUNNING)
     model.services.docker_containers = [
@@ -176,8 +193,7 @@ def test_docker_ingress_https_on_nginx_container_is_info():
     )
     findings = DockerAuditor(model).audit()
     info = [f for f in findings if f.id == "DOCKER-3"]
-    assert info
-    assert info[0].severity == Severity.INFO
+    assert not info
 
 
 def test_docker_non_ingress_https_on_443_is_warning():

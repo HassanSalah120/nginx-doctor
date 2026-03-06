@@ -81,6 +81,11 @@ class SecurityBaselineAuditor:
     def _check_pending_security_updates(self) -> list[Finding]:
         pending_security = self.model.security_baseline.pending_security_updates
         pending_total = self.model.security_baseline.pending_updates_total
+        package_manager = self._package_manager()
+        manager_token = self._package_manager_token(package_manager)
+        manager_desc = self._package_manager_description(package_manager)
+        security_command = self._security_update_command(package_manager)
+        updates_command = self._pending_update_command(package_manager)
         findings: list[Finding] = []
 
         if pending_security is not None and pending_security > 0:
@@ -90,14 +95,17 @@ class SecurityBaselineAuditor:
                     id="PATCH-1",
                     severity=severity,
                     confidence=0.85,
-                    condition=f"{pending_security} pending security update(s) detected",
-                    cause="System package metadata indicates unpatched security updates.",
+                    condition=f"{pending_security} pending {manager_token} security update(s) detected",
+                    cause=(
+                        f"{manager_desc} metadata indicates unpatched host OS security updates. "
+                        "This signal is separate from npm/composer/pip dependency posture."
+                    ),
                     evidence=[
                         Evidence(
                             source_file="package-manager",
                             line_number=1,
                             excerpt=f"security_updates={pending_security}, total_updates={pending_total}",
-                            command="apt list --upgradable | grep -i security",
+                            command=security_command,
                         )
                     ],
                     treatment="Apply security updates in a maintenance window and restart affected services.",
@@ -113,14 +121,17 @@ class SecurityBaselineAuditor:
                     id="PATCH-2",
                     severity=Severity.INFO,
                     confidence=0.70,
-                    condition=f"{pending_total} package update(s) pending",
-                    cause="Large backlog of pending package updates was detected.",
+                    condition=f"{pending_total} {manager_token} package update(s) pending",
+                    cause=(
+                        f"Large backlog of pending host OS package updates detected via {manager_desc}. "
+                        "This finding does not represent application dependency manager updates."
+                    ),
                     evidence=[
                         Evidence(
                             source_file="package-manager",
                             line_number=1,
                             excerpt=f"total_updates={pending_total}",
-                            command="apt list --upgradable",
+                            command=updates_command,
                         )
                     ],
                     treatment="Review update cadence and apply outstanding updates regularly.",
@@ -131,6 +142,46 @@ class SecurityBaselineAuditor:
             )
 
         return findings
+
+    def _package_manager(self) -> str:
+        value = (self.model.security_baseline.package_manager or "").strip().lower()
+        return value if value in {"apt", "dnf", "yum"} else "os-package-manager"
+
+    @staticmethod
+    def _package_manager_token(value: str) -> str:
+        if value in {"apt", "dnf", "yum"}:
+            return value.upper()
+        return "OS package-manager"
+
+    @staticmethod
+    def _package_manager_description(value: str) -> str:
+        if value == "apt":
+            return "APT (Ubuntu/Debian)"
+        if value == "dnf":
+            return "DNF (Fedora/RHEL)"
+        if value == "yum":
+            return "YUM (RHEL/CentOS)"
+        return "host OS package manager"
+
+    @staticmethod
+    def _security_update_command(value: str) -> str:
+        if value == "apt":
+            return "apt list --upgradable | grep -i security"
+        if value == "dnf":
+            return "dnf -q updateinfo list security"
+        if value == "yum":
+            return "yum -q updateinfo list security all"
+        return "system package manager security listing"
+
+    @staticmethod
+    def _pending_update_command(value: str) -> str:
+        if value == "apt":
+            return "apt list --upgradable"
+        if value == "dnf":
+            return "dnf -q check-update"
+        if value == "yum":
+            return "yum -q check-update"
+        return "system package manager update listing"
 
     def _check_reboot_required(self) -> list[Finding]:
         if not self.model.security_baseline.reboot_required:

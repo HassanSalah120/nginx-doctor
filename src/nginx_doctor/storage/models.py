@@ -29,6 +29,7 @@ SCHEMA_SCAN_JOBS = """
 CREATE TABLE IF NOT EXISTS scan_jobs (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     server_id INTEGER NOT NULL,
+    repo_scan_paths TEXT,
     status TEXT NOT NULL DEFAULT 'queued',
     started_at TEXT,
     finished_at TEXT,
@@ -38,6 +39,7 @@ CREATE TABLE IF NOT EXISTS scan_jobs (
     raw_report_path TEXT,
     error_message TEXT,
     progress INTEGER NOT NULL DEFAULT 0,
+    model_json TEXT,
     created_at TEXT NOT NULL DEFAULT (datetime('now')),
     FOREIGN KEY (server_id) REFERENCES servers(id)
 );
@@ -126,6 +128,7 @@ class ScanJobRecord:
 
     id: int
     server_id: int
+    repo_scan_paths: str | None = None
     status: str = "queued"
     started_at: str | None = None
     finished_at: str | None = None
@@ -135,6 +138,7 @@ class ScanJobRecord:
     raw_report_path: str | None = None
     error_message: str | None = None
     progress: int = 0
+    model_json: str | None = None
     created_at: str = ""
     # Joined fields (optional, populated by repository)
     server_name: str | None = None
@@ -144,6 +148,7 @@ class ScanJobRecord:
         d: dict[str, Any] = {
             "id": self.id,
             "server_id": self.server_id,
+            "repo_scan_paths": self.repo_scan_paths,
             "status": self.status,
             "started_at": self.started_at,
             "finished_at": self.finished_at,

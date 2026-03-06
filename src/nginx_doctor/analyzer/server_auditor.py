@@ -46,7 +46,7 @@ class ServerAuditor:
 
         # Group projects by exposure status
         exposed_projects = []
-        safe_but_exists = []
+        safe_but_exists: list[tuple[str, str | None]] = []
 
         for project in self.model.projects:
             if not project.env_path:
@@ -104,7 +104,7 @@ class ServerAuditor:
                     exposed_projects.append(project.path)
             else:
                 # Exists but outside root (e.g. Laravel standard)
-                safe_but_exists.append(project.path)
+                safe_but_exists.append((project.path, getattr(project, "env_permissions", None)))
 
         # Create consolidated findings
         if exposed_projects:
@@ -130,16 +130,29 @@ class ServerAuditor:
 
         # Optional: Info for safe files if verbosity needed, or just skip
         # User requested rigorous check: "INFO if .env exists but is outside root"
-        if safe_but_exists:
+        non_compliant_safe = [
+            (path, perms)
+            for path, perms in safe_but_exists
+            if not self._is_env_permission_compliant(perms)
+        ]
+        if non_compliant_safe:
              findings.append(
                 Finding(
                     severity=Severity.INFO,
                     confidence=0.60,
                     condition=".env file exists (likely safe)",
-                    cause=f"Found .env files, but they appear to be outside the public web root",
+                    cause=(
+                        "Found .env files outside the public web root with missing or broad permissions. "
+                        "Recommended mode is 600 or 640."
+                    ),
                     evidence=[
-                        Evidence(source_file=p, line_number=1, excerpt=".env outside root", command="filesystem scan") 
-                        for p in safe_but_exists
+                        Evidence(
+                            source_file=path,
+                            line_number=1,
+                            excerpt=f".env outside root (mode={perms or 'unknown'})",
+                            command="filesystem scan",
+                        )
+                        for path, perms in non_compliant_safe
                     ],
                     treatment="Ensure permissions are 600 or 640 (owner read-only)",
                     impact=["Compliance check"],
@@ -147,6 +160,19 @@ class ServerAuditor:
             )
 
         return findings
+
+    @staticmethod
+    def _is_env_permission_compliant(mode: str | None) -> bool:
+        if not mode:
+            return False
+        digits = "".join(ch for ch in str(mode) if ch.isdigit())
+        if len(digits) < 3:
+            return False
+        mode3 = digits[-3:]
+        owner = int(mode3[0])
+        group = int(mode3[1])
+        other = int(mode3[2])
+        return other == 0 and group in {0, 4} and owner >= 4
 
     def _check_ssl_configuration(self) -> list[Finding]:
         """Check SSL configuration for issues."""

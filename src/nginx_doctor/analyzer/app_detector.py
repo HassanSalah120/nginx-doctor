@@ -238,5 +238,6 @@ class AppDetector:
             public_path=public_path,
             framework_version=detection.framework_version,
             env_path=f"{scan.path}/.env" if scan.has_env else None,
+            env_permissions=scan.env_permissions,
             docker_container=next((r.split("'")[1] for r in detection.reasons if "Docker container" in r), None)
         )

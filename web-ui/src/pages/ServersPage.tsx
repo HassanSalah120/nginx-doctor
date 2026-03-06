@@ -1,10 +1,20 @@
 import { useEffect, useState } from 'react'
+import { useNavigate } from 'react-router-dom'
+import { PageHeader } from '../components/PageHeader'
+import { buttonClass, inputClass, panelClass, tableShellClass } from '../components/ui/styles'
 import { api, type Server } from '../services/api'
 
 export default function ServersPage() {
+  const navigate = useNavigate()
   const [servers, setServers] = useState<Server[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [banner, setBanner] = useState<{ type: 'success' | 'error'; message: string } | null>(null)
+  const [scanningServerId, setScanningServerId] = useState<number | null>(null)
+  const [scanOptions, setScanOptions] = useState({
+    repo_scan_paths: '',
+  })
+  const [showScanOptions, setShowScanOptions] = useState(false)
   const [showAddForm, setShowAddForm] = useState(false)
   const [formData, setFormData] = useState({
     name: '',
@@ -32,6 +42,12 @@ export default function ServersPage() {
     }
   }
 
+  async function refresh() {
+    setBanner(null)
+    setError(null)
+    await loadServers()
+  }
+
   async function handleSubmit(e: React.FormEvent) {
     e.preventDefault()
     try {
@@ -54,6 +70,21 @@ export default function ServersPage() {
     }
   }
 
+  async function handleScan(serverId: number) {
+    try {
+      setBanner(null)
+      setScanningServerId(serverId)
+      const res = await api.startScan(serverId, {
+        repo_scan_paths: scanOptions.repo_scan_paths || undefined,
+      })
+      setBanner({ type: 'success', message: `Scan started. Job #${res.job_id} queued. DevOps checks are included by default.` })
+    } catch (err) {
+      setBanner({ type: 'error', message: err instanceof Error ? err.message : 'Failed to start scan' })
+    } finally {
+      setScanningServerId(null)
+    }
+  }
+
   if (loading) {
     return (
       <div className="flex h-64 items-center justify-center">
@@ -65,28 +96,78 @@ export default function ServersPage() {
   if (error) {
     return (
       <div className="rounded-lg border border-red-800 bg-red-950/30 p-4 text-red-400">
-        Error: {error}
+        <div className="flex items-start justify-between gap-3">
+          <div>Error: {error}</div>
+          <button type="button" onClick={() => setError(null)} className="text-red-300/80 hover:text-red-200">
+            Dismiss
+          </button>
+        </div>
       </div>
     )
   }
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Servers</h1>
-          <p className="text-sm text-slate-400">Manage your infrastructure servers</p>
-        </div>
-        <button
-          onClick={() => setShowAddForm(!showAddForm)}
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500"
+      <PageHeader
+        title="Servers"
+        subtitle="Manage your infrastructure servers"
+        actions={
+          <>
+            <button
+              type="button"
+              onClick={refresh}
+              className={buttonClass({ variant: 'default', size: 'sm' })}
+            >
+              Refresh
+            </button>
+            <button
+              type="button"
+              onClick={() => setShowAddForm(!showAddForm)}
+              className={buttonClass({ variant: 'primary', size: 'sm' })}
+            >
+              {showAddForm ? 'Cancel' : 'Add Server'}
+            </button>
+          </>
+        }
+      />
+
+      {banner && (
+        <div
+          className={`rounded-lg border p-4 ${
+            banner.type === 'success'
+              ? 'border-green-800 bg-green-950/30 text-green-400'
+              : 'border-red-800 bg-red-950/30 text-red-400'
+          }`}
         >
-          {showAddForm ? 'Cancel' : 'Add Server'}
-        </button>
-      </div>
+          <div className="flex items-center justify-between gap-4">
+            <div>{banner.message}</div>
+            <div className="flex items-center gap-2">
+              {banner.type === 'success' && (
+                <button
+                  onClick={() => navigate('/jobs')}
+                  className="rounded-md bg-slate-700 px-3 py-1.5 text-sm font-medium text-white hover:bg-slate-600"
+                >
+                  View Jobs
+                </button>
+              )}
+              <button
+                type="button"
+                onClick={() => setBanner(null)}
+                className={
+                  banner.type === 'success'
+                    ? 'text-green-300/80 hover:text-green-200'
+                    : 'text-red-300/80 hover:text-red-200'
+                }
+              >
+                Dismiss
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {showAddForm && (
-        <form onSubmit={handleSubmit} className="rounded-lg border border-slate-800 bg-slate-900/50 p-4 space-y-3">
+        <form onSubmit={handleSubmit} className={panelClass() + ' space-y-3'}>
           <div className="grid gap-3 md:grid-cols-2">
             <div>
               <label className="block text-sm text-slate-400">Name</label>
@@ -94,7 +175,7 @@ export default function ServersPage() {
                 type="text"
                 value={formData.name}
                 onChange={e => setFormData({ ...formData, name: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
                 placeholder="Production Server"
                 required
               />
@@ -105,7 +186,7 @@ export default function ServersPage() {
                 type="text"
                 value={formData.host}
                 onChange={e => setFormData({ ...formData, host: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
                 placeholder="192.168.1.100 or server.example.com"
                 required
               />
@@ -116,7 +197,7 @@ export default function ServersPage() {
                 type="number"
                 value={formData.port}
                 onChange={e => setFormData({ ...formData, port: parseInt(e.target.value) })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
               />
             </div>
             <div>
@@ -125,7 +206,7 @@ export default function ServersPage() {
                 type="text"
                 value={formData.username}
                 onChange={e => setFormData({ ...formData, username: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
               />
             </div>
             <div>
@@ -134,7 +215,7 @@ export default function ServersPage() {
                 type="password"
                 value={formData.password}
                 onChange={e => setFormData({ ...formData, password: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
               />
             </div>
             <div>
@@ -143,7 +224,7 @@ export default function ServersPage() {
                 type="text"
                 value={formData.key_path}
                 onChange={e => setFormData({ ...formData, key_path: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
                 placeholder="~/.ssh/id_rsa"
               />
             </div>
@@ -153,7 +234,7 @@ export default function ServersPage() {
                 type="text"
                 value={formData.tags}
                 onChange={e => setFormData({ ...formData, tags: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
                 placeholder="production, nginx, web"
               />
             </div>
@@ -161,7 +242,7 @@ export default function ServersPage() {
           <div className="flex justify-end">
             <button
               type="submit"
-              className="rounded-md bg-green-600 px-4 py-2 text-sm font-medium text-white hover:bg-green-500"
+              className={buttonClass({ variant: 'primary', size: 'md' })}
             >
               Create Server
             </button>
@@ -170,17 +251,17 @@ export default function ServersPage() {
       )}
 
       {servers.length === 0 ? (
-        <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-8 text-center">
+        <div className={panelClass() + ' p-8 text-center'}>
           <p className="text-slate-400">No servers configured yet.</p>
           <button
             onClick={() => setShowAddForm(true)}
-            className="mt-2 text-sm text-blue-400 hover:text-blue-300"
+            className={buttonClass({ variant: 'primary', size: 'md' }) + ' mt-3'}
           >
-            Add your first server →
+            Add your first server
           </button>
         </div>
       ) : (
-        <div className="rounded-lg border border-slate-800 bg-slate-900/50 overflow-hidden">
+        <div className={tableShellClass()}>
           <table className="w-full text-sm">
             <thead className="bg-slate-800/50 text-slate-400">
               <tr>
@@ -207,12 +288,46 @@ export default function ServersPage() {
                     )}
                   </td>
                   <td className="px-4 py-3 text-right">
-                    <button
-                      onClick={() => handleDelete(server.id)}
-                      className="text-sm text-red-400 hover:text-red-300"
-                    >
-                      Delete
-                    </button>
+                    <div className="flex items-center justify-end gap-3">
+                      <button
+                        onClick={() => setShowScanOptions(!showScanOptions)}
+                        className={buttonClass({ variant: 'default', size: 'sm' })}
+                        title="Scan options"
+                      >
+                        Options
+                      </button>
+                      <button
+                        onClick={() => handleScan(server.id)}
+                        disabled={scanningServerId === server.id}
+                        className={buttonClass({ variant: 'default', size: 'sm' })}
+                      >
+                        {scanningServerId === server.id ? 'Starting...' : 'Scan now'}
+                      </button>
+                      <button
+                        onClick={() => handleDelete(server.id)}
+                        className={buttonClass({ variant: 'default', size: 'sm' }) + ' text-red-300'}
+                      >
+                        Delete
+                      </button>
+                    </div>
+                    {showScanOptions && (
+                      <div className={panelClass() + ' mt-3 text-left'}>
+                        <div className="text-sm text-slate-300">
+                          DevOps checks are always enabled for every scan.
+                        </div>
+                        <div className="mt-2">
+                          <label className="block text-xs text-slate-400">Repo paths (optional, comma-separated)</label>
+                          <input
+                            type="text"
+                            value={scanOptions.repo_scan_paths}
+                            onChange={e => setScanOptions({ ...scanOptions, repo_scan_paths: e.target.value })}
+                            placeholder="e.g. /var/www/, /home/kingof30/ChatDuelForm"
+                            className={inputClass() + ' mt-1 text-xs'}
+                          />
+                          <p className="mt-1 text-xs text-slate-500">Leave empty to auto-discover repo paths from nginx roots, Docker mounts, and running app paths.</p>
+                        </div>
+                      </div>
+                    )}
                   </td>
                 </tr>
               ))}

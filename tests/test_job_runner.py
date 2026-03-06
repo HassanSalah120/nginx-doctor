@@ -90,3 +90,61 @@ def test_authentication_fails_and_logs_username(tmp_path, monkeypatch):
     assert any("Connecting to tester@1.2.3.4:22" in log.message for log in logs)
     # error log should also contain the same human-friendly text
     assert any("Authentication failed" in log.message for log in logs)
+
+
+def test_run_scan_forces_devops_checks(tmp_path, monkeypatch):
+    """Web scan jobs must always run diagnosis with DevOps checks enabled."""
+    _setup_db(tmp_path)
+    sid = ServerRepository().create(name="okhost", host="127.0.0.1")
+    runner = ScanJobRunner()
+
+    class DummySSH:
+        def __init__(self, config):
+            pass
+
+        def __enter__(self):
+            return object()
+
+        def __exit__(self, *args):
+            pass
+
+    class DummyResult:
+        def __init__(self):
+            self.findings = []
+            self.score = 100
+            self.topology_snapshot = {}
+            self.trend = None
+            self.ws_inventory = []
+            self.suppressed_findings = []
+            self.waiver_source = None
+
+    class DummyDiagnosis:
+        correlations = []
+
+        def to_dict(self):
+            return {}
+
+    captured: dict[str, object] = {}
+
+    def fake_run_full_scan(ssh, log_fn=None, repo_scan_paths=None):
+        captured["repo_scan_paths"] = repo_scan_paths
+        return object()
+
+    def fake_run_full_diagnosis(model, ssh, **kwargs):
+        captured["devops_enabled"] = kwargs.get("devops_enabled")
+        return DummyResult()
+
+    monkeypatch.setattr("nginx_doctor.web.job_runner.SSHConnector", DummySSH)
+    monkeypatch.setattr("nginx_doctor.pipeline.run_full_scan", fake_run_full_scan)
+    monkeypatch.setattr("nginx_doctor.pipeline.run_full_diagnosis", fake_run_full_diagnosis)
+    monkeypatch.setattr("nginx_doctor.web.job_runner.generate_diagnosis", lambda **kwargs: DummyDiagnosis())
+    monkeypatch.setattr(runner, "_generate_report", lambda *args, **kwargs: "dummy-report.html")
+
+    job_id = runner._job_repo.create(sid)
+    runner._run_scan(job_id, sid, repo_scan_paths="/var/www")
+
+    job = runner._job_repo.get_by_id(job_id)
+    assert job is not None
+    assert job.status == "success"
+    assert captured.get("devops_enabled") is True
+    assert captured.get("repo_scan_paths") == "/var/www"

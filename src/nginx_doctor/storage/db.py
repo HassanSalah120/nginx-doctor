@@ -62,9 +62,30 @@ def init_db() -> None:
     try:
         for ddl in ALL_SCHEMAS:
             conn.execute(ddl)
+        # Run migrations for schema updates
+        _migrate_add_model_json(conn)
+        _migrate_add_repo_scan_paths(conn)
         conn.commit()
     finally:
         conn.close()
+
+
+def _migrate_add_model_json(conn: sqlite3.Connection) -> None:
+    """Add model_json column to scan_jobs if missing (for existing DBs)."""
+    cursor = conn.execute("PRAGMA table_info(scan_jobs)")
+    columns = {row["name"] for row in cursor.fetchall()}
+    if "model_json" not in columns:
+        conn.execute("ALTER TABLE scan_jobs ADD COLUMN model_json TEXT")
+        conn.commit()
+
+
+def _migrate_add_repo_scan_paths(conn: sqlite3.Connection) -> None:
+    """Add repo_scan_paths column to scan_jobs if missing."""
+    cursor = conn.execute("PRAGMA table_info(scan_jobs)")
+    columns = {row["name"] for row in cursor.fetchall()}
+    if "repo_scan_paths" not in columns:
+        conn.execute("ALTER TABLE scan_jobs ADD COLUMN repo_scan_paths TEXT")
+        conn.commit()
 
 
 def get_db() -> sqlite3.Connection:

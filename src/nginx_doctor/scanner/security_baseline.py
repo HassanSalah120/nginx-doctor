@@ -61,12 +61,15 @@ class SecurityBaselineScanner:
 
     def _collect_patch_posture(self, baseline: SecurityBaselineModel) -> None:
         if self.ssh.run("which apt 2>/dev/null").success:
+            baseline.package_manager = "apt"
             self._collect_apt_updates(baseline)
             return
         if self.ssh.run("which dnf 2>/dev/null").success:
+            baseline.package_manager = "dnf"
             self._collect_dnf_updates(baseline)
             return
         if self.ssh.run("which yum 2>/dev/null").success:
+            baseline.package_manager = "yum"
             self._collect_yum_updates(baseline)
 
     def _collect_apt_updates(self, baseline: SecurityBaselineModel) -> None:

@@ -440,6 +440,8 @@ def check(ctx: click.Context, server: str) -> None:
             import nginx_doctor.checks.security.security_auditor
             import nginx_doctor.checks.phpfpm.phpfpm_auditor
             import nginx_doctor.checks.performance.performance_auditor
+            import nginx_doctor.checks.devops.ci_posture_auditor
+            import nginx_doctor.checks.devops.dependency_posture_auditor
 
             check_ctx = CheckContext(
                 model=model,
@@ -449,6 +451,7 @@ def check(ctx: click.Context, server: str) -> None:
                 security_enabled=True,
                 phpfpm_enabled=True,
                 performance_enabled=True,
+                devops_enabled=True,
             )
             findings = deduplicate_findings(legacy_findings + run_checks(check_ctx))
             
@@ -626,6 +629,8 @@ def diagnose(
             import nginx_doctor.checks.security.security_auditor
             import nginx_doctor.checks.phpfpm.phpfpm_auditor
             import nginx_doctor.checks.performance.performance_auditor
+            import nginx_doctor.checks.devops.ci_posture_auditor
+            import nginx_doctor.checks.devops.dependency_posture_auditor
 
             default_modular_checks_enabled = not minimal
             
@@ -637,6 +642,7 @@ def diagnose(
                 security_enabled=default_modular_checks_enabled or security or run_all,
                 phpfpm_enabled=default_modular_checks_enabled or phpfpm or run_all,
                 performance_enabled=default_modular_checks_enabled or performance or run_all,
+                devops_enabled=True,
             )
             
             new_findings = run_checks(check_ctx)

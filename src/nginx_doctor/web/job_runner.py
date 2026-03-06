@@ -62,34 +62,56 @@ class ScanJobRunner:
         self._correlation_repo = CorrelationRepository()
         self._log_repo = JobLogRepository()
 
-    def submit_scan(self, server_id: int) -> int:
+    def submit_scan(
+        self,
+        server_id: int,
+        repo_scan_paths: str | None = None,
+    ) -> int:
         """Submit a scan job for a server. Returns the job ID."""
         # Verify server exists
         server = self._server_repo.get_by_id(server_id)
         if server is None:
             raise ValueError(f"Server with ID {server_id} not found")
 
-        job_id = self._job_repo.create(server_id)
+        job_id = self._job_repo.create(server_id, repo_scan_paths=repo_scan_paths)
         self._log_repo.append(job_id, "Job queued")
-        self._executor.submit(self._run_scan, job_id, server_id)
+        self._executor.submit(
+            self._run_scan,
+            job_id,
+            server_id,
+            repo_scan_paths,
+        )
         return job_id
 
-    def _run_scan(self, job_id: int, server_id: int) -> None:
+    def _run_scan(
+        self,
+        job_id: int,
+        server_id: int,
+        repo_scan_paths: str | None = None,
+    ) -> None:
         """Worker function: execute the full scan pipeline."""
         start_time = time.time()
-        job_timeout = int(os.getenv("NGINX_DOCTOR_JOB_TIMEOUT", "600"))
+        try:
+            # <= 0 disables the hard job timeout.
+            job_timeout = int(os.getenv("NGINX_DOCTOR_JOB_TIMEOUT", "0"))
+        except ValueError:
+            job_timeout = 0
 
         def check_status() -> None:
             """Check if job was cancelled or timed out."""
             job = self._job_repo.get_by_id(job_id)
             if job and job.status == "cancel_requested":
                 raise JobCancelledError("Job was cancelled by user")
-            if time.time() - start_time > job_timeout:
+            if job_timeout > 0 and time.time() - start_time > job_timeout:
                 raise JobTimeoutError(f"Job exceeded configured timeout of {job_timeout} seconds")
 
         try:
             self._job_repo.update_status(job_id, "running", progress=0)
             self._log_repo.append(job_id, "Job started")
+            if job_timeout > 0:
+                self._log_repo.append(job_id, f"Job timeout configured: {job_timeout}s")
+            else:
+                self._log_repo.append(job_id, "Job timeout configured: disabled")
             check_status()
 
             # Load server details
@@ -131,12 +153,26 @@ class ScanJobRunner:
 
                 # Phase 1: Scan
                 log_fn("Starting infrastructure scan...")
-                model = run_full_scan(ssh, log_fn=log_fn)
+                log_fn("DevOps checks enabled (always-on)")
+                if repo_scan_paths:
+                    log_fn(f"Repo scan paths: {repo_scan_paths}")
+                else:
+                    log_fn("Repo scan paths: auto-discovery")
+                model = run_full_scan(
+                    ssh,
+                    log_fn=log_fn,
+                    repo_scan_paths=repo_scan_paths,
+                )
                 self._job_repo.update_status(job_id, progress=40)
 
                 # Phase 2: Diagnose
                 log_fn("Running analysis and diagnosis...")
-                result = run_full_diagnosis(model, ssh, log_fn=log_fn)
+                result = run_full_diagnosis(
+                    model,
+                    ssh,
+                    log_fn=log_fn,
+                    devops_enabled=True,
+                )
                 self._job_repo.update_status(job_id, progress=70)
 
                 # Phase 3: Generate HTML report
@@ -207,6 +243,9 @@ class ScanJobRunner:
 
                 # Phase 6: Update job as success
                 summary = f"{len(result.findings)} findings, score {result.score}/100"
+                from dataclasses import asdict
+                model_dict = asdict(model) if hasattr(model, '__dataclass_fields__') else {}
+                model_json = json.dumps(model_dict, default=str)
                 self._job_repo.update_status(
                     job_id,
                     "success",
@@ -214,6 +253,7 @@ class ScanJobRunner:
                     summary=summary,
                     diagnosis_json=diagnosis_json,
                     raw_report_path=report_path,
+                    model_json=model_json,
                     progress=100,
                 )
                 self._log_repo.append(job_id, f"Scan complete: {summary}")

@@ -9,6 +9,8 @@ IMPORTANT: All findings MUST include evidence with:
 - excerpt
 """
 
+import re
+
 from nginx_doctor.model.evidence import Evidence, Severity
 from nginx_doctor.model.finding import Finding
 from nginx_doctor.model.server import (
@@ -269,6 +271,9 @@ class NginxDoctorAnalyzer:
         for name, servers in name_to_servers.items():
             if len(servers) <= 1:
                 continue  # Not a duplicate
+            if not self._has_overlapping_listens(servers):
+                # Same server_name on different listen sockets (e.g. :80 and :443) is expected.
+                continue
 
             winner = self._simulate_routing_winner(servers)
             winner_ref = f"{winner.source_file}:{winner.line_number}" if winner else "unknown"
@@ -355,6 +360,78 @@ class NginxDoctorAnalyzer:
             return (has_default, has_ssl, server.line_number or 10**9)
 
         return sorted(servers, key=precedence)[0]
+
+    def _has_overlapping_listens(self, servers: list[ServerBlock]) -> bool:
+        if len(servers) <= 1:
+            return False
+        for i, left in enumerate(servers):
+            left_bindings = self._extract_listen_bindings(left)
+            for right in servers[i + 1 :]:
+                right_bindings = self._extract_listen_bindings(right)
+                if self._bindings_overlap(left_bindings, right_bindings):
+                    return True
+        return False
+
+    @staticmethod
+    def _extract_listen_bindings(server: ServerBlock) -> set[tuple[int, str]]:
+        """Extract best-effort (port, address) bindings from listen directives."""
+        bindings: set[tuple[int, str]] = set()
+        for listen in server.listen or []:
+            text = (listen or "").strip()
+            if not text:
+                continue
+            first = text.split()[0]
+            if first.startswith("unix:"):
+                continue
+
+            address = "*"
+            port: int | None = None
+
+            bracket_match = re.match(r"^\[([^\]]+)\](?::(\d+))?$", first)
+            if bracket_match:
+                raw_addr = bracket_match.group(1)
+                raw_port = bracket_match.group(2)
+                address = raw_addr
+                if raw_port:
+                    port = int(raw_port)
+            elif ":" in first and first.count(":") == 1:
+                raw_addr, raw_port = first.rsplit(":", 1)
+                address = raw_addr.strip() or "*"
+                if raw_port.isdigit():
+                    port = int(raw_port)
+            elif first.isdigit():
+                port = int(first)
+            else:
+                # Example: listen default_server; (defaults to 80)
+                for token in text.split():
+                    if token.isdigit():
+                        port = int(token)
+                        break
+
+            if port is None:
+                port = 80
+
+            addr_norm = address.strip().lower().strip("[]")
+            if addr_norm in {"", "*", "0.0.0.0", "::"}:
+                addr_norm = "*"
+            bindings.add((port, addr_norm))
+
+        if not bindings:
+            bindings.add((80, "*"))
+        return bindings
+
+    @staticmethod
+    def _bindings_overlap(
+        left: set[tuple[int, str]],
+        right: set[tuple[int, str]],
+    ) -> bool:
+        for l_port, l_addr in left:
+            for r_port, r_addr in right:
+                if l_port != r_port:
+                    continue
+                if l_addr == "*" or r_addr == "*" or l_addr == r_addr:
+                    return True
+        return False
 
     def _duplicate_server_effective_impact(self, winner: ServerBlock | None, shadowed: list[ServerBlock]) -> dict:
         if not winner or not shadowed:

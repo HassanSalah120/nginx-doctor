@@ -153,23 +153,23 @@ async def delete_server(
 
     A 404 is returned when the server simply doesn’t exist.
     """
-    # optional cascade path
+    server = _repo.get_by_id(server_id)
+    if not server:
+        raise HTTPException(status_code=404, detail="Server not found")
+
+    jobs_removed = 0
     if cascade:
         from nginx_doctor.storage.repositories import ScanJobRepository
+
         job_repo = ScanJobRepository()
         jobs_removed = job_repo.delete_by_server_id(server_id)
-        # jobs_removed may be zero if there were none
 
     deleted = _repo.delete(server_id)
     if not deleted:
-        if _repo.get_by_id(server_id):
-            # still exists; jobs prevented deletion
-            raise HTTPException(
-                status_code=400,
-                detail="Cannot delete server with existing scan jobs; delete jobs first",
-            )
-        else:
-            raise HTTPException(status_code=404, detail="Server not found")
+        raise HTTPException(
+            status_code=400,
+            detail="Cannot delete server with existing scan jobs; delete jobs first",
+        )
 
     config_mgr = ConfigManager()
     config_mgr.remove_profile(server.name)

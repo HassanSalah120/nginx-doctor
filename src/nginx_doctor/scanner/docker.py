@@ -79,7 +79,7 @@ class DockerScanner:
     def _is_docker_present(self) -> bool:
         """Check if docker binary or socket exists."""
         # Check binary
-        if self.ssh.run("which docker", timeout=2).success:
+        if self.ssh.run("which docker", timeout=4).success:
             return True
         # Check socket
         if self.ssh.file_exists(self.SOCKET_PATH):
@@ -89,16 +89,16 @@ class DockerScanner:
     def _scan_via_api(self) -> DockerScanResult | None:
         """Attempt to scan via Docker Engine API over unix socket."""
         # Check socket permissions first
-        stat_result = self.ssh.run(f"stat -c '%a' {self.SOCKET_PATH}", timeout=2)
+        stat_result = self.ssh.run(f"stat -c '%a' {self.SOCKET_PATH}", timeout=4)
         if not stat_result.success:
             return None  # Socket doesn't exist or stat failed
 
         # Try curl with --unix-socket
         test_cmd = f"curl --unix-socket {self.SOCKET_PATH} http://localhost/_ping"
-        if not self.ssh.run(test_cmd, timeout=2).success:
+        if not self.ssh.run(test_cmd, timeout=4).success:
             # Maybe curl doesn't support unix sockets or permission denied
             test_nc = f"echo -e 'GET /_ping HTTP/1.0\\r\\n' | nc -U {self.SOCKET_PATH}"
-            if not self.ssh.run(test_nc, timeout=2).success:
+            if not self.ssh.run(test_nc, timeout=4).success:
                 return None
 
         # If we got here, we have socket access!
@@ -132,7 +132,7 @@ class DockerScanner:
     def _scan_via_cli(self) -> DockerScanResult | None:
         """Fallback to scanning via Docker CLI."""
         # check if docker ps works
-        ps_result = self.ssh.run("docker ps --format '{{json .}}' --all", timeout=5)
+        ps_result = self.ssh.run("docker ps --format '{{json .}}' --all", timeout=10)
         if not ps_result.success:
             # If it failed due to permission, track that
             if "permission denied" in ps_result.stderr.lower():
@@ -160,7 +160,7 @@ class DockerScanner:
         if container_ids:
             # Batch inspect
             inspect_cmd = f"docker inspect {' '.join(container_ids)}"
-            inspect_result = self.ssh.run(inspect_cmd, timeout=10)
+            inspect_result = self.ssh.run(inspect_cmd, timeout=15)
             if inspect_result.success:
                 try:
                     details = json.loads(inspect_result.stdout)
@@ -170,7 +170,7 @@ class DockerScanner:
                     pass
 
         # Get version
-        v_result = self.ssh.run("docker version --format '{{.Server.Version}}'", timeout=2)
+        v_result = self.ssh.run("docker version --format '{{.Server.Version}}'", timeout=4)
         version = v_result.stdout.strip() if v_result.success else None
 
         return DockerScanResult(

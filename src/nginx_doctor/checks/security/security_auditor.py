@@ -11,6 +11,7 @@ Checks:
 
 import re
 from dataclasses import dataclass
+from fnmatch import fnmatch
 from typing import TYPE_CHECKING
 
 from nginx_doctor.checks import BaseCheck, CheckContext, register_check
@@ -113,7 +114,7 @@ class SecurityAuditor(BaseCheck):
                     condition="Missing security headers",
                     cause=(
                         f"Location '{location.path}' is missing: {', '.join(missing)}. "
-                        "Note: Nginx 'add_header' in a child block clears all parent headers."
+                        "Note: Nginx inheritance depends on add_header/add_header_inherit at each level."
                     ),
                     evidence=[Evidence(
                         source_file=server.source_file,
@@ -123,7 +124,7 @@ class SecurityAuditor(BaseCheck):
                     )] + evidence_list,
                     treatment=(
                         "Add missing headers directly to this block or ensure no `add_header` "
-                        "directive overrides the include file."
+                        "directive overrides parent headers (or use `add_header_inherit merge;`)."
                     ),
                     fix_commands=[
                         f"cat >> {server.source_file or '/etc/nginx/conf.d/security.conf'} << 'EOF'",
@@ -147,24 +148,118 @@ class SecurityAuditor(BaseCheck):
     def _get_effective_headers(
         self, info: "NginxInfo", server: ServerBlock, location: LocationBlock
     ) -> dict[str, str]:
-        """Calculate effective headers based on Nginx inheritance rules.
-        
-        Rule: Directives from the preceding level are inherited ONLY if there are 
-        no add_header directives defined on the current level.
-        """
-        # Level 3: Location
-        if location.headers:
-            return location.headers
-            
-        # Level 2: Server
-        if server.headers:
-            return server.headers
-            
-        # Level 1: HTTP/Global
-        if info.http_headers:
-            return info.http_headers
-            
-        return {}
+        """Calculate effective add_header values including add_header_inherit semantics."""
+        http_headers = dict(info.http_headers or {})
+        http_mode = self._normalize_add_header_inherit(info.http_add_header_inherit)
+
+        server_headers = dict(server.headers)
+        server_inc_headers, server_inc_mode = self._resolve_include_headers(info, server.include_files)
+        server_headers.update(server_inc_headers)
+        server_mode = self._normalize_add_header_inherit(
+            server.add_header_inherit or server_inc_mode or http_mode
+        )
+        effective_server_headers = self._apply_add_header_inheritance(
+            parent_headers=http_headers,
+            current_headers=server_headers,
+            mode=server_mode,
+        )
+
+        location_headers = dict(location.headers)
+        loc_inc_headers, loc_inc_mode = self._resolve_include_headers(info, location.include_files)
+        location_headers.update(loc_inc_headers)
+        location_mode = self._normalize_add_header_inherit(
+            location.add_header_inherit or loc_inc_mode or server_mode
+        )
+        return self._apply_add_header_inheritance(
+            parent_headers=effective_server_headers,
+            current_headers=location_headers,
+            mode=location_mode,
+        )
+
+    def _resolve_include_headers(
+        self,
+        info: "NginxInfo",
+        include_specs: list[str],
+        visited: set[str] | None = None,
+    ) -> tuple[dict[str, str], str | None]:
+        """Best-effort parse of add_header and add_header_inherit in included files."""
+        if not include_specs:
+            return ({}, None)
+        if visited is None:
+            visited = set()
+
+        headers: dict[str, str] = {}
+        inherit_mode: str | None = None
+
+        for include_spec in include_specs:
+            for file_path in self._match_include_files(info, include_spec):
+                if file_path in visited:
+                    continue
+                visited.add(file_path)
+                content = info.virtual_files.get(file_path, "")
+                if not content:
+                    continue
+
+                nested_includes: list[str] = []
+                for raw_line in content.splitlines():
+                    line = raw_line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+
+                    if line.startswith("add_header "):
+                        parts = line.rstrip(";").split(None, 2)
+                        if len(parts) >= 3:
+                            headers[parts[1]] = parts[2]
+                    elif line.startswith("add_header_inherit "):
+                        parts = line.rstrip(";").split(None, 1)
+                        if len(parts) == 2:
+                            inherit_mode = parts[1].strip()
+                    elif line.startswith("include "):
+                        nested_includes.append(line[len("include "):].rstrip(";").strip())
+
+                if nested_includes:
+                    nested_headers, nested_mode = self._resolve_include_headers(info, nested_includes, visited)
+                    headers.update(nested_headers)
+                    if nested_mode is not None:
+                        inherit_mode = nested_mode
+
+        return (headers, inherit_mode)
+
+    @staticmethod
+    def _normalize_add_header_inherit(value: str | None) -> str:
+        mode = (value or "on").strip().strip(";").strip('"').strip("'").lower()
+        return mode if mode in {"on", "off", "merge"} else "on"
+
+    @staticmethod
+    def _apply_add_header_inheritance(
+        parent_headers: dict[str, str],
+        current_headers: dict[str, str],
+        mode: str,
+    ) -> dict[str, str]:
+        """Apply add_header inheritance mode to current scope headers."""
+        if mode == "off":
+            return dict(current_headers)
+        if mode == "merge":
+            merged = dict(parent_headers)
+            merged.update(current_headers)
+            return merged
+        # mode == "on" (default)
+        return dict(current_headers) if current_headers else dict(parent_headers)
+
+    def _match_include_files(self, info: "NginxInfo", include_spec: str) -> list[str]:
+        spec = (include_spec or "").strip().strip('"').strip("'")
+        if not spec:
+            return []
+
+        all_files = list((info.virtual_files or {}).keys())
+        if "*" in spec or "?" in spec or "[" in spec:
+            return [path for path in all_files if fnmatch(path, spec)]
+
+        if spec in info.virtual_files:
+            return [spec]
+
+        normalized_suffix = "/" + spec.lstrip("./")
+        return [path for path in all_files if path.endswith(normalized_suffix)]
 
     def _check_autoindex(self, info: "NginxInfo | None") -> list[Finding]:
         """NGX-SEC-2: Check for autoindex on."""
@@ -284,6 +379,8 @@ class SecurityAuditor(BaseCheck):
 
         for server in info.servers:
             for loc in server.locations:
+                if self._is_location_access_restricted(info, loc, server):
+                    continue
                 for pat in patterns:
                     if re.search(pat, loc.path, re.IGNORECASE):
                         severity = Severity.WARNING
@@ -312,6 +409,121 @@ class SecurityAuditor(BaseCheck):
                         ))
                         break
         return findings
+
+    def _is_location_access_restricted(
+        self,
+        info: "NginxInfo",
+        location: LocationBlock,
+        server: ServerBlock | None = None,
+    ) -> bool:
+        """Treat deny-all with allowlist as non-public, including inherited server rules."""
+        loc_allow = list(location.allow_rules)
+        loc_deny = list(location.deny_rules)
+        loc_auth = location.auth_basic
+        loc_inc_allow, loc_inc_deny, loc_inc_auth = self._resolve_include_access_rules(info, location.include_files)
+        loc_allow.extend(loc_inc_allow)
+        loc_deny.extend(loc_inc_deny)
+        if loc_auth is None:
+            loc_auth = loc_inc_auth
+        srv_auth: str | None = None
+
+        if loc_allow or loc_deny:
+            allow_rules = loc_allow
+            deny_rules = loc_deny
+        elif server:
+            srv_allow = list(server.allow_rules)
+            srv_deny = list(server.deny_rules)
+            srv_auth = server.auth_basic
+            srv_inc_allow, srv_inc_deny, srv_inc_auth = self._resolve_include_access_rules(info, server.include_files)
+            srv_allow.extend(srv_inc_allow)
+            srv_deny.extend(srv_inc_deny)
+            if srv_auth is None:
+                srv_auth = srv_inc_auth
+            allow_rules = srv_allow
+            deny_rules = srv_deny
+        else:
+            allow_rules = []
+            deny_rules = []
+            srv_auth = None
+
+        deny_values = {rule.strip().lower() for rule in deny_rules}
+        allow_values = {rule.strip().lower() for rule in allow_rules}
+
+        deny_all = "all" in deny_values
+        allow_all = "all" in allow_values
+
+        # auth_basic in scope means location is not publicly exposed without authentication.
+        effective_auth = loc_auth if loc_auth is not None else srv_auth
+        if effective_auth and effective_auth.strip().lower() != "off":
+            return True
+
+        # Explicit deny/forbidden return blocks should not be treated as exposed.
+        if location.return_directive:
+            first_token = location.return_directive.split()[0].strip()
+            if first_token in {"401", "403", "404", "410", "444"}:
+                return True
+
+        # deny all + any non-wildcard allowlist is considered restricted.
+        return deny_all and not allow_all
+
+    def _resolve_include_access_rules(
+        self,
+        info: "NginxInfo",
+        include_specs: list[str],
+        visited: set[str] | None = None,
+    ) -> tuple[list[str], list[str], str | None]:
+        """Best-effort parse of allow/deny/auth_basic rules from included files."""
+        if not include_specs:
+            return ([], [], None)
+        if visited is None:
+            visited = set()
+
+        allow_rules: list[str] = []
+        deny_rules: list[str] = []
+        auth_basic: str | None = None
+
+        for include_spec in include_specs:
+            for file_path in self._match_include_files(info, include_spec):
+                if file_path in visited:
+                    continue
+                visited.add(file_path)
+                content = info.virtual_files.get(file_path, "")
+                if not content:
+                    continue
+
+                nested_includes: list[str] = []
+                for raw_line in content.splitlines():
+                    line = raw_line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+
+                    if line.startswith("allow "):
+                        value = line[len("allow "):].rstrip(";").strip()
+                        if value:
+                            allow_rules.append(value)
+                    elif line.startswith("deny "):
+                        value = line[len("deny "):].rstrip(";").strip()
+                        if value:
+                            deny_rules.append(value)
+                    elif line.startswith("auth_basic "):
+                        value = line[len("auth_basic "):].rstrip(";").strip()
+                        if value:
+                            auth_basic = value
+                    elif line.startswith("include "):
+                        nested_includes.append(line[len("include "):].rstrip(";").strip())
+
+                if nested_includes:
+                    nested_allow, nested_deny, nested_auth = self._resolve_include_access_rules(
+                        info,
+                        nested_includes,
+                        visited,
+                    )
+                    allow_rules.extend(nested_allow)
+                    deny_rules.extend(nested_deny)
+                    if nested_auth is not None:
+                        auth_basic = nested_auth
+
+        return (allow_rules, deny_rules, auth_basic)
 
     def _check_php_in_uploads(self, info: "NginxInfo | None") -> list[Finding]:
         """NGX-SEC-4: Check if PHP execution is supposedly blocked in uploads."""

@@ -8,7 +8,7 @@ import tempfile
 from datetime import datetime
 from typing import Any
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Body, HTTPException
 from pydantic import BaseModel, Field
 
 from nginx_doctor.daemon.monitor import MonitoringDaemon
@@ -40,6 +40,17 @@ class DaemonStatusResponse(BaseModel):
     next_scan: str | None
     scan_count: int
     error_count: int
+
+
+class DaemonHistoryEntry(BaseModel):
+    """Recent daemon activity entry."""
+    timestamp: str
+    server: str
+    status: str
+    message: str | None = None
+    new_findings: int | None = None
+    resolved_findings: int | None = None
+    findings_total: int | None = None
 
 
 class DaemonConfig(BaseModel):
@@ -154,18 +165,30 @@ async def get_daemon_status() -> DaemonStatusResponse:
     daemon = daemon_instance or MonitoringDaemon(pid_file=PID_FILE)
     
     running = daemon.is_running()
-    info = daemon.get_info() if running else {}
-    
+    info = daemon.get_info()
+
+    interval = info.get("interval", 3600)
+
+    server_repo = ServerRepository()
+    requested_servers = info.get("servers")
+
+    server_ids: list[int] = []
+    if requested_servers == "all" or requested_servers is None:
+        server_ids = [s.id for s in server_repo.get_all()]
+    elif isinstance(requested_servers, list):
+        name_to_id = {s.name: s.id for s in server_repo.get_all()}
+        server_ids = [name_to_id[name] for name in requested_servers if name in name_to_id]
+
     return DaemonStatusResponse(
         running=running,
         pid=info.get("pid"),
-        started_at=None,  # Could be enhanced to track this
-        interval=info.get("interval", 3600),
-        servers=[],  # Could be enhanced to track this
-        last_scan=None,  # Could be enhanced to track this
-        next_scan=None,
-        scan_count=0,
-        error_count=0,
+        started_at=info.get("started_at"),
+        interval=interval,
+        servers=server_ids,
+        last_scan=info.get("last_scan"),
+        next_scan=info.get("next_scan"),
+        scan_count=int(info.get("scan_count", 0) or 0),
+        error_count=int(info.get("error_count", 0) or 0),
     )
 
 
@@ -193,32 +216,65 @@ async def update_daemon_config(config: DaemonConfig) -> DaemonConfig:
     return config
 
 
-@router.get("/history")
-async def get_scan_history(limit: int = 10) -> list[dict[str, Any]]:
+@router.get("/history", response_model=list[DaemonHistoryEntry])
+async def get_scan_history(limit: int = 10) -> list[DaemonHistoryEntry]:
     """Get recent scan history from daemon."""
-    # This would track daemon scan history
-    # For now, return placeholder
-    return []
+    daemon = daemon_instance or MonitoringDaemon(pid_file=PID_FILE)
+    events = daemon.get_history(limit=max(1, min(limit, 200)))
+    return [DaemonHistoryEntry(**event) for event in events]
 
 
 @router.post("/scan-now")
-async def trigger_manual_scan(server_ids: list[int] = []) -> dict[str, Any]:
+async def trigger_manual_scan(
+    server_ids: list[int] | None = Body(default=None),
+) -> dict[str, Any]:
     """Trigger immediate scan via daemon."""
     global daemon_instance
     
     if not daemon_instance or not daemon_instance.is_running():
         raise HTTPException(status_code=400, detail="Daemon not running")
     
-    # Trigger one scan cycle
-    import threading
-    def trigger():
-        daemon_instance._run_scan_cycle()
-    
-    thread = threading.Thread(target=trigger)
-    thread.start()
-    
+    server_repo = ServerRepository()
+
+    effective_server_ids: list[int] = []
+
+    if server_ids:
+        effective_server_ids = server_ids
+        id_to_name = {s.id: s.name for s in server_repo.get_all()}
+        names = [id_to_name[sid] for sid in server_ids if sid in id_to_name]
+
+        # Trigger scan for only the selected servers
+        import threading
+
+        def trigger():
+            for name in names:
+                daemon_instance._scan_server(name)
+
+        thread = threading.Thread(target=trigger)
+        thread.start()
+
+    else:
+        # No explicit server_ids provided: return and scan the daemon-configured monitored servers.
+        info = daemon_instance.get_info()
+        requested_servers = info.get("servers")
+
+        if requested_servers == "all" or requested_servers is None:
+            effective_server_ids = [s.id for s in server_repo.get_all()]
+        elif isinstance(requested_servers, list):
+            name_to_id = {s.name: s.id for s in server_repo.get_all()}
+            effective_server_ids = [name_to_id[name] for name in requested_servers if name in name_to_id]
+
+        # Trigger one scan cycle (uses daemon_instance.servers)
+        import threading
+
+        def trigger():
+            daemon_instance._run_scan_cycle()
+
+        thread = threading.Thread(target=trigger)
+        thread.start()
+
     return {
         "status": "scan_triggered",
-        "servers": server_ids,
+        "servers": effective_server_ids,
         "timestamp": datetime.utcnow().isoformat(),
     }

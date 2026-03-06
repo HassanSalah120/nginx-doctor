@@ -40,8 +40,8 @@ class FirewallScanner:
         rules: list[str] = []
 
         # 1. UFW details (highest signal for OPEN/BLOCKED correlation)
-        if self.ssh.run("which ufw", timeout=2).success:
-            res = self.ssh.run("ufw status numbered 2>/dev/null || ufw status 2>/dev/null", timeout=3)
+        if self.ssh.run("which ufw", timeout=4).success:
+            res = self.ssh.run("ufw status numbered 2>/dev/null || ufw status 2>/dev/null", timeout=6)
             if res.success:
                 out = res.stdout.strip()
                 lower = out.lower()
@@ -53,7 +53,7 @@ class FirewallScanner:
                 parsed = self._parse_ufw_rules(out)
                 if parsed:
                     rules.extend(parsed)
-            verbose = self.ssh.run("ufw status verbose 2>/dev/null", timeout=3)
+            verbose = self.ssh.run("ufw status verbose 2>/dev/null", timeout=6)
             if verbose.success and verbose.stdout:
                 parsed_default = self._parse_ufw_default_incoming(verbose.stdout)
                 if parsed_default:
@@ -65,14 +65,14 @@ class FirewallScanner:
                             rules.append(rule)
 
         # 2. NFT fallback (Modern Ubuntu/Debian)
-        if state != "present" and self.ssh.run("which nft", timeout=2).success:
-            res = self.ssh.run("nft list ruleset", timeout=2)
+        if state != "present" and self.ssh.run("which nft", timeout=4).success:
+            res = self.ssh.run("nft list ruleset", timeout=4)
             if res.success and len(res.stdout.strip()) > 100:
                 state = "present"
 
         # 3. Iptables fallback
-        if state != "present" and self.ssh.run("which iptables", timeout=2).success:
-            res = self.ssh.run("iptables -S", timeout=2)
+        if state != "present" and self.ssh.run("which iptables", timeout=4).success:
+            res = self.ssh.run("iptables -S", timeout=4)
             if res.success:
                 lines = [l for l in res.stdout.strip().split("\n") if l and not l.startswith("-P ")]
                 if len(lines) > 2:
@@ -80,9 +80,9 @@ class FirewallScanner:
 
         # 4. Fully unknown toolchain
         if (
-            not self.ssh.run("which ufw", timeout=2).success
-            and not self.ssh.run("which nft", timeout=2).success
-            and not self.ssh.run("which iptables", timeout=2).success
+            not self.ssh.run("which ufw", timeout=4).success
+            and not self.ssh.run("which nft", timeout=4).success
+            and not self.ssh.run("which iptables", timeout=4).success
         ):
             state = "unknown"
 

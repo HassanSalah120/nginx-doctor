@@ -11,6 +11,7 @@ import datetime
 import json
 import os
 import subprocess
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
@@ -30,13 +31,18 @@ from nginx_doctor.scanner.certbot import CertbotScanner
 from nginx_doctor.scanner.docker import DockerScanner
 from nginx_doctor.scanner.filesystem import FilesystemScanner
 from nginx_doctor.scanner.firewall import FirewallScanner
+from nginx_doctor.scanner.kernel_limits import KernelLimitsScanner
+from nginx_doctor.scanner.logs import LogsScanner
 from nginx_doctor.scanner.mysql import MySQLScanner
 from nginx_doctor.scanner.network_surface import NetworkSurfaceScanner
 from nginx_doctor.scanner.nginx import NginxScanner
 from nginx_doctor.scanner.nodejs import NodeScanner
+from nginx_doctor.scanner.ops_posture import OpsPostureScanner
 from nginx_doctor.scanner.php import PHPScanner
 from nginx_doctor.scanner.redis import RedisScanner
+from nginx_doctor.scanner.resources import ResourcesScanner
 from nginx_doctor.scanner.security_baseline import SecurityBaselineScanner
+from nginx_doctor.scanner.storage import StorageScanner
 from nginx_doctor.scanner.systemd import SystemdScanner
 from nginx_doctor.scanner.telemetry import TelemetryScanner
 from nginx_doctor.scanner.tls_status import TLSStatusScanner
@@ -60,8 +66,9 @@ class DiagnosisResult:
 
 def run_full_scan(
     ssh: SSHConnector,
-    *,
     log_fn: Callable[[str], None] | None = None,
+    repo_scan_paths: str | None = None,
+    progress_fn: Callable[[int], None] | None = None,
 ) -> ServerModel:
     """Run all scanners and build the ServerModel.
 
@@ -70,6 +77,8 @@ def run_full_scan(
     Args:
         ssh: Active SSH connection.
         log_fn: Optional callback for progress logging (used by web job runner).
+        repo_scan_paths: Optional comma-separated paths to scan for repos.
+        progress_fn: Optional callback for progress percentage (0-40 for scan phase).
 
     Returns:
         Fully populated ServerModel.
@@ -78,7 +87,52 @@ def run_full_scan(
         if log_fn:
             log_fn(msg)
 
+    def _progress(pct: int) -> None:
+        if progress_fn:
+            progress_fn(pct)
+
+    def _retry_once(label: str, fn: Callable[[], Any], current: Any) -> Any:
+        """Retry a scanner once when the first result looks inconclusive."""
+        _log(f"  - {label} scan looked incomplete; retrying once...")
+        try:
+            fresh = fn()
+            return fresh if fresh is not None else current
+        except Exception as e:
+            _log(f"  - {label} retry failed: {e}")
+            return current
+
+    def _enum_text(value: Any) -> str:
+        raw = getattr(value, "value", value)
+        return str(raw).strip().lower() if raw is not None else ""
+
+    def _env_int(name: str, default: int, minimum: int, maximum: int) -> int:
+        raw = os.getenv(name, str(default)).strip()
+        try:
+            value = int(raw)
+        except ValueError:
+            value = default
+        return max(minimum, min(maximum, value))
+
+    def _ssh_parallel_hint() -> int:
+        hint = getattr(ssh, "_max_parallel_commands", None)
+        if isinstance(hint, int) and hint > 0:
+            return hint
+        return 1
+
+    def _telemetry_has_signal(data: Any) -> bool:
+        if data is None:
+            return False
+        has_cpu = getattr(data, "cpu_cores", None) is not None
+        has_load = any(
+            getattr(data, attr, None) is not None
+            for attr in ("load_1", "load_5", "load_15")
+        )
+        has_mem = getattr(data, "mem_total_mb", None) is not None
+        has_disks = bool(getattr(data, "disks", None))
+        return has_cpu or has_load or has_mem or has_disks
+
     _log("Starting filesystem scan...")
+    _progress(10)
     os_scanner = FilesystemScanner(ssh)
     from nginx_doctor.scanner.nginx_collector import NginxCollector
     collector = NginxCollector(ssh)
@@ -96,26 +150,166 @@ def run_full_scan(
         sockets=php_data.fpm_sockets,
         fpm_configs=php_data.pool_configs,
     )
+    _progress(15)
 
-    _log("Scanning secondary services...")
+    _log("Scanning secondary services in parallel...")
     docker_scanner = DockerScanner(ssh)
     mysql_scanner = MySQLScanner(ssh)
     node_scanner = NodeScanner(ssh)
     network_scanner = NetworkSurfaceScanner(ssh)
     firewall_scanner = FirewallScanner(ssh)
     telemetry_scanner = TelemetryScanner(ssh)
+    logs_scanner = LogsScanner(ssh)
+    storage_scanner = StorageScanner(ssh)
+    resources_scanner = ResourcesScanner(ssh)
+    kernel_limits_scanner = KernelLimitsScanner(ssh)
     baseline_scanner = SecurityBaselineScanner(ssh)
     vulnerability_scanner = VulnerabilityScanner(ssh)
+    ops_posture_scanner = OpsPostureScanner(ssh)
 
-    docker_data = docker_scanner.scan()
-    mysql_data = mysql_scanner.scan()
-    node_data = node_scanner.scan()
-    network_data = network_scanner.scan()
-    firewall_details = firewall_scanner.scan_details()
+    def scan_service(name, scanner, method="scan"):
+        try:
+            return (name, getattr(scanner, method)())
+        except Exception as e:
+            _log(f"  - {name} scan error: {e}")
+            return (name, None)
+
+    def _run_scanner_batch(
+        scanners: list[tuple[str, Any, str]],
+        *,
+        max_workers: int,
+    ) -> dict[str, Any]:
+        batch_results: dict[str, Any] = {}
+        if max_workers <= 1:
+            for name, scanner, method in scanners:
+                item_name, data = scan_service(name, scanner, method)
+                batch_results[item_name] = data
+                _log(f"  - {item_name} scan complete")
+            return batch_results
+
+        with ThreadPoolExecutor(max_workers=max_workers) as executor:
+            future_to_name = {
+                executor.submit(scan_service, name, scanner, method): name
+                for name, scanner, method in scanners
+            }
+            for future in as_completed(future_to_name):
+                name, data = future.result()
+                batch_results[name] = data
+                _log(f"  - {name} scan complete")
+        return batch_results
+
+    secondary_scanners = [
+        ("docker", docker_scanner, "scan"),
+        ("mysql", mysql_scanner, "scan"),
+        ("node", node_scanner, "scan"),
+        ("network", network_scanner, "scan"),
+        ("firewall", firewall_scanner, "scan_details"),
+        ("telemetry", telemetry_scanner, "scan"),
+        ("logs", logs_scanner, "scan"),
+        ("storage", storage_scanner, "scan"),
+        ("resources", resources_scanner, "scan"),
+        ("kernel_limits", kernel_limits_scanner, "scan"),
+        ("baseline", baseline_scanner, "scan"),
+        ("vulnerability", vulnerability_scanner, "scan"),
+        ("ops_posture", ops_posture_scanner, "scan"),
+    ]
+
+    ssh_parallel = _ssh_parallel_hint()
+    secondary_workers = _env_int(
+        "NGINX_DOCTOR_SCAN_SECONDARY_WORKERS",
+        default=max(1, ssh_parallel),
+        minimum=1,
+        maximum=8,
+    )
+    results = _run_scanner_batch(secondary_scanners, max_workers=secondary_workers)
+
+    docker_data = results.get("docker") or docker_scanner.scan.__annotations__.get("return", lambda: type("Data", (), {"status": "unknown", "containers": []})())()
+    mysql_data = results.get("mysql") or mysql_scanner.scan.__annotations__.get("return", lambda: type("Data", (), {"status": "unknown", "config_detected": False, "bind_addresses": []})())()
+    node_data = results.get("node") or node_scanner.scan.__annotations__.get("return", lambda: type("Data", (), {"status": "unknown", "processes": []})())()
+    network_data = results.get("network") or network_scanner.scan.__annotations__.get("return", lambda: type("Data", (), {"listeners": []})())()
+    firewall_details = results.get("firewall") or {"state": "unknown", "ufw_enabled": None, "ufw_default_incoming": None, "rules": []}
+    telemetry_data = results.get("telemetry")
+    if telemetry_data is None:
+        from nginx_doctor.model.server import TelemetryModel
+
+        telemetry_data = TelemetryModel()
+    logs_data = results.get("logs")
+    if logs_data is None:
+        from nginx_doctor.model.server import LogsModel
+
+        logs_data = LogsModel()
+    storage_data = results.get("storage")
+    if storage_data is None:
+        from nginx_doctor.model.server import StorageModel
+
+        storage_data = StorageModel()
+    resources_data = results.get("resources")
+    if resources_data is None:
+        from nginx_doctor.model.server import ResourcesModel
+
+        resources_data = ResourcesModel()
+    kernel_limits_data = results.get("kernel_limits")
+    if kernel_limits_data is None:
+        from nginx_doctor.model.server import KernelLimitsModel
+
+        kernel_limits_data = KernelLimitsModel()
+    baseline_data = results.get("baseline")
+    vulnerability_data = results.get("vulnerability")
+    ops_posture_data = results.get("ops_posture")
+    if ops_posture_data is None:
+        from nginx_doctor.model.server import OpsPostureModel
+
+        ops_posture_data = OpsPostureModel()
+
+    if not _telemetry_has_signal(telemetry_data):
+        telemetry_data = _retry_once("telemetry", telemetry_scanner.scan, telemetry_data)
+
+    # Consistency retries for volatile scanner outputs.
+    docker_mode = str(getattr(nginx_data, "mode", "")).upper() == "DOCKER"
+    docker_containers = getattr(docker_data, "containers", []) or []
+    docker_status = getattr(docker_data, "status", None)
+    docker_capability = _enum_text(getattr(docker_status, "capability", None))
+    ops_docker_signals = any(
+        bool(getattr(ops_posture_data, name, None))
+        for name in (
+            "docker_root_user_containers",
+            "docker_no_memory_limit_containers",
+            "docker_no_readonly_rootfs_containers",
+            "docker_privileged_containers",
+        )
+    )
+    if docker_mode and (not docker_containers) and (
+        docker_capability in {"none", "limited", "capabilitylevel.none", "capabilitylevel.limited"}
+        or ops_docker_signals
+    ):
+        docker_data = _retry_once("docker", docker_scanner.scan, docker_data)
+
+    network_endpoints = getattr(network_data, "endpoints", None)
+    if network_endpoints is None:
+        network_endpoints = getattr(network_data, "listeners", None)
+    if not network_endpoints:
+        network_data = _retry_once("network", network_scanner.scan, network_data)
+
+    if (firewall_details or {}).get("state", "unknown") == "unknown":
+        firewall_details = _retry_once("firewall", firewall_scanner.scan_details, firewall_details)
+
     firewall_state = firewall_details.get("state", "unknown")
-    telemetry_data = telemetry_scanner.scan()
-    baseline_data = baseline_scanner.scan()
-    vulnerability_data = vulnerability_scanner.scan()
+
+    _log("Preparing supply-chain (repo) path discovery...")
+    _progress(22)
+    from nginx_doctor.model.server import SupplyChainModel
+    supply_chain: SupplyChainModel = SupplyChainModel(enabled=False)
+    requested_repo_paths: list[str] = []
+    try:
+        from nginx_doctor.scanner.repo_ci import parse_repo_paths_from_env
+
+        # Use provided repo_scan_paths if given, otherwise fall back to env vars.
+        if repo_scan_paths:
+            requested_repo_paths = [p.strip() for p in repo_scan_paths.split(",") if p.strip()]
+        else:
+            requested_repo_paths = parse_repo_paths_from_env()
+    except Exception:
+        requested_repo_paths = []
 
     from nginx_doctor.model.server import ServicesModel
     services = ServicesModel(
@@ -132,14 +326,34 @@ def run_full_scan(
         firewall_rules=firewall_details.get("rules", []),
     )
 
-    _log("Scanning runtime intelligence...")
+    _log("Scanning runtime intelligence in parallel...")
+    _progress(28)
     systemd_scanner = SystemdScanner(ssh)
     redis_scanner = RedisScanner(ssh)
     worker_scanner = WorkerScanner(ssh)
 
-    systemd_data = systemd_scanner.scan()
-    redis_data = redis_scanner.scan()
-    worker_data = worker_scanner.scan()
+    runtime_scanners = [
+        ("systemd", systemd_scanner, "scan"),
+        ("redis", redis_scanner, "scan"),
+        ("worker", worker_scanner, "scan"),
+    ]
+
+    runtime_workers = _env_int(
+        "NGINX_DOCTOR_SCAN_RUNTIME_WORKERS",
+        default=max(1, min(3, ssh_parallel)),
+        minimum=1,
+        maximum=4,
+    )
+    runtime_results = _run_scanner_batch(runtime_scanners, max_workers=runtime_workers)
+
+    systemd_data = runtime_results.get("systemd") or systemd_scanner.scan.__annotations__.get("return", lambda: type("Data", (), {"status": "unknown", "services": []})())()
+    redis_data = runtime_results.get("redis") or redis_scanner.scan.__annotations__.get("return", lambda: type("Data", (), {"status": "unknown", "instances": []})())()
+    worker_data = runtime_results.get("worker") or worker_scanner.scan.__annotations__.get("return", lambda: type("Data", (), {"status": "unknown", "processes": [], "scheduler_detected": False, "scheduler_type": None})())()
+
+    systemd_services = getattr(systemd_data, "services", []) or []
+    systemd_state = _enum_text(getattr(getattr(systemd_data, "status", None), "state", None))
+    if not systemd_services and systemd_state in {"unknown", "servicestate.unknown"}:
+        systemd_data = _retry_once("systemd", systemd_scanner.scan, systemd_data)
 
     from nginx_doctor.model.server import RuntimeModel
     runtime = RuntimeModel(
@@ -154,16 +368,82 @@ def run_full_scan(
     )
 
     _log("Parsing nginx configuration...")
+    _progress(32)
     parser = NginxConfigParser()
     nginx_info = parser.parse(nginx_data.config_dump, version=nginx_data.version)
     nginx_info.mode = nginx_data.mode
     nginx_info.container_id = nginx_data.container_id
     nginx_info.path_mapping = nginx_data.path_mapping
+    if getattr(nginx_data, "config_dump", ""):
+        worker_conn_match = KernelLimitsScanner._WORKER_CONN_RE.search(nginx_data.config_dump)
+        if worker_conn_match and getattr(kernel_limits_data, "nginx_worker_connections", None) is None:
+            try:
+                kernel_limits_data.nginx_worker_connections = int(worker_conn_match.group(1))
+            except ValueError:
+                pass
+
+        proc_match = KernelLimitsScanner._WORKER_PROC_RE.search(nginx_data.config_dump)
+        if proc_match and getattr(kernel_limits_data, "nginx_worker_processes", None) is None:
+            token = proc_match.group(1).strip().lower()
+            if token.isdigit():
+                kernel_limits_data.nginx_worker_processes = int(token)
+            elif token == "auto":
+                cpu_cores = (
+                    getattr(telemetry_data, "cpu_cores", None)
+                    or getattr(resources_data, "cpu_cores", None)
+                )
+                if isinstance(cpu_cores, int) and cpu_cores > 0:
+                    kernel_limits_data.nginx_worker_processes = cpu_cores
+
+        if (
+            getattr(kernel_limits_data, "nginx_worker_connections", None) is not None
+            or getattr(kernel_limits_data, "nginx_worker_processes", None) is not None
+        ):
+            kernel_limits_data.collection_status["kernel.nginx_dump"] = "collected"
+            kernel_limits_data.collection_notes.pop("kernel.nginx_dump", None)
+
+    _log("Scanning TLS and certificates in parallel...")
+    _progress(34)
     certbot_scanner = CertbotScanner(ssh)
     tls_scanner = TLSStatusScanner(ssh)
     probe_scanner = UpstreamProbeScanner(ssh)
-    certbot_data = certbot_scanner.scan(nginx_info)
-    tls_data = tls_scanner.scan(nginx_info)
+
+    def scan_nginx_related(name, scanner, method, *args):
+        try:
+            return (name, getattr(scanner, method)(*args))
+        except Exception as e:
+            return (name, None)
+
+    nginx_scanners = [
+        ("certbot", certbot_scanner, "scan", nginx_info),
+        ("tls", tls_scanner, "scan", nginx_info),
+    ]
+
+    nginx_results = {}
+    nginx_workers = _env_int(
+        "NGINX_DOCTOR_SCAN_NGINX_WORKERS",
+        default=max(1, min(2, ssh_parallel)),
+        minimum=1,
+        maximum=3,
+    )
+    if nginx_workers <= 1:
+        for name, scanner, method, arg in nginx_scanners:
+            item_name, data = scan_nginx_related(name, scanner, method, arg)
+            nginx_results[item_name] = data
+            _log(f"  - {item_name} scan complete")
+    else:
+        with ThreadPoolExecutor(max_workers=nginx_workers) as executor:
+            future_to_name = {
+                executor.submit(scan_nginx_related, name, scanner, method, arg): name
+                for name, scanner, method, arg in nginx_scanners
+            }
+            for future in as_completed(future_to_name):
+                name, data = future.result()
+                nginx_results[name] = data
+                _log(f"  - {name} scan complete")
+
+    certbot_data = nginx_results.get("certbot")
+    tls_data = nginx_results.get("tls")
     probe_enabled = os.getenv("NGINX_DOCTOR_ACTIVE_PROBES", "1").strip().lower() not in {
         "0", "false", "no", "off"
     }
@@ -174,6 +454,7 @@ def run_full_scan(
     nginx_info.skipped_paths = skipped_roots
 
     _log("Detecting applications...")
+    _progress(36)
     detector = AppDetector()
     candidate_roots: dict[str, dict] = {}
 
@@ -233,13 +514,83 @@ def run_full_scan(
                     "source": "node",
                 }
 
-    # Scan all unique candidates
+    # Scan all unique candidates in parallel
     unique_paths = sorted(candidate_roots.keys(), key=len)
+
+    def _is_repo_candidate_path(path: str) -> bool:
+        if not path or not path.startswith("/"):
+            return False
+        blocked_roots = {"/", "/proc", "/sys", "/dev", "/run", "/tmp", "/var/run"}
+        if path in blocked_roots:
+            return False
+        if any(path.startswith(root + "/") for root in blocked_roots if root != "/"):
+            return False
+        return ssh.dir_exists(path)
+
+    def _dedupe_paths(paths: list[str]) -> list[str]:
+        unique: list[str] = []
+        seen: set[str] = set()
+        for raw in paths:
+            path = (raw or "").strip().rstrip("/")
+            if not path:
+                continue
+            if path not in seen:
+                unique.append(path)
+                seen.add(path)
+        return unique
+
+    _log("Scanning supply-chain (repo) signals...")
+    effective_repo_paths = list(requested_repo_paths)
+    if not effective_repo_paths:
+        auto_candidates: list[str] = []
+        for path in unique_paths:
+            if not _is_repo_candidate_path(path):
+                continue
+            auto_candidates.append(path)
+            if path.count("/") >= 2:
+                parent = path.rsplit("/", 1)[0]
+                if _is_repo_candidate_path(parent):
+                    auto_candidates.append(parent)
+
+        # Fall back to common code roots only when topology discovery found nothing.
+        if not auto_candidates:
+            for common_dir in ("/var/www", "/srv", "/opt", "/home"):
+                if ssh.dir_exists(common_dir):
+                    auto_candidates.append(common_dir)
+
+        effective_repo_paths = _dedupe_paths(auto_candidates)
+
+    try:
+        from nginx_doctor.scanner.repo_ci import RepoCIScanner
+
+        if effective_repo_paths:
+            if requested_repo_paths:
+                _log(f"  - Using provided repo path(s): {', '.join(effective_repo_paths[:5])}")
+            else:
+                _log(
+                    "  - Auto-discovered repo path(s): "
+                    + ", ".join(effective_repo_paths[:5])
+                    + (" ..." if len(effective_repo_paths) > 5 else "")
+                )
+            supply_chain = RepoCIScanner(ssh, log_fn=_log).scan(effective_repo_paths)
+            if not requested_repo_paths:
+                supply_chain.notes.append(
+                    "Repo paths were auto-discovered from nginx roots, docker mounts, node process cwd, and common code directories."
+                )
+        else:
+            _log("  - No explicit or auto-discovered repo paths found; skipping supply-chain scan.")
+    except Exception as e:
+        _log(f"  - Supply-chain scan failed: {e}")
+        supply_chain = SupplyChainModel(enabled=False)
+
+    _progress(37)
+
     projects: list = []
 
-    for site_path in unique_paths:
+    def scan_project(site_path: str) -> Any | None:
+        """Scan a single project directory."""
         if not ssh.dir_exists(site_path):
-            continue
+            return None
 
         scan_data = os_scanner.scan_directory(site_path)
         basename = site_path.split("/")[-1].lower()
@@ -269,7 +620,7 @@ def run_full_scan(
         )
 
         if basename in asset_folders and detection.confidence < 0.5:
-            continue
+            return None
 
         project_info = detector.to_project_info(scan_data, detection)
         project_info.discovery_source = candidate_roots[site_path]["source"]
@@ -284,7 +635,48 @@ def run_full_scan(
             project_info.path,
         )
 
-        projects.append(project_info)
+        return project_info
+
+    _log(f"Scanning {len(unique_paths)} project candidates in parallel...")
+    project_workers = _env_int(
+        "NGINX_DOCTOR_SCAN_PROJECT_WORKERS",
+        default=max(1, ssh_parallel),
+        minimum=1,
+        maximum=8,
+    )
+    if unique_paths:
+        project_workers = min(project_workers, len(unique_paths))
+    if max(1, project_workers) <= 1:
+        completed = 0
+        for path in unique_paths:
+            try:
+                project_info = scan_project(path)
+                if project_info:
+                    projects.append(project_info)
+                completed += 1
+                if completed % 5 == 0 or completed == len(unique_paths):
+                    _log(f"  - Scanned {completed}/{len(unique_paths)} projects...")
+                    _progress(36 + int((completed / len(unique_paths)) * 3))
+            except Exception as e:
+                _log(f"  - Failed to scan {path}: {e}")
+    else:
+        with ThreadPoolExecutor(max_workers=max(1, project_workers)) as executor:
+            future_to_path = {executor.submit(scan_project, path): path for path in unique_paths}
+            completed = 0
+            for future in as_completed(future_to_path):
+                path = future_to_path[future]
+                try:
+                    project_info = future.result()
+                    if project_info:
+                        projects.append(project_info)
+                    completed += 1
+                    if completed % 5 == 0 or completed == len(unique_paths):
+                        _log(f"  - Scanned {completed}/{len(unique_paths)} projects...")
+                        # Update progress from 36% to 39% based on completion
+                        _progress(36 + int((completed / len(unique_paths)) * 3))
+                except Exception as e:
+                    _log(f"  - Failed to scan {path}: {e}")
+    _progress(40)
 
     # Get local git hash
     commit_hash = "unknown"
@@ -306,12 +698,18 @@ def run_full_scan(
         services=services,
         projects=projects,
         telemetry=telemetry_data,
+        logs=logs_data,
+        storage=storage_data,
+        resources=resources_data,
+        kernel_limits=kernel_limits_data,
         security_baseline=baseline_data,
+        ops_posture=ops_posture_data,
         vulnerability=vulnerability_data,
         certbot=certbot_data,
         tls=tls_data,
         network_surface=network_data,
         upstream_probes=upstream_probes,
+        supply_chain=supply_chain,
         scan_timestamp=datetime.datetime.now().isoformat(),
         doctor_version=__version__,
         commit_hash=commit_hash,
@@ -339,6 +737,9 @@ def run_full_diagnosis(
     phpfpm: bool = True,
     performance: bool = True,
     log_fn: Callable[[str], None] | None = None,
+    devops_enabled: bool = True,
+    repo_scan_paths: str | None = None,
+    progress_fn: Callable[[int], None] | None = None,
 ) -> DiagnosisResult:
     """Run all analyzers/checks and produce scored findings.
 
@@ -352,6 +753,7 @@ def run_full_diagnosis(
         minimal: If True, only run baseline analyzers.
         laravel/ports/security/phpfpm/performance: Enable/disable specific checks.
         log_fn: Optional callback for progress logging.
+        progress_fn: Optional callback for progress percentage (40-70 for diagnosis phase).
 
     Returns:
         DiagnosisResult with findings, score, topology, trend, etc.
@@ -360,7 +762,12 @@ def run_full_diagnosis(
         if log_fn:
             log_fn(msg)
 
-    _log("Running analyzers...")
+    def _progress(pct: int) -> None:
+        if progress_fn:
+            progress_fn(pct)
+
+    _log("Running analyzers in parallel...")
+    _progress(40)
     dr_analyzer = NginxDoctorAnalyzer(model)
 
     from nginx_doctor.analyzer.wss_auditor import WSSAuditor
@@ -371,13 +778,18 @@ def run_full_diagnosis(
     from nginx_doctor.analyzer.worker_auditor import WorkerAuditor
     from nginx_doctor.analyzer.mysql_auditor import MySQLAuditor
     from nginx_doctor.analyzer.firewall_auditor import FirewallAuditor
+    from nginx_doctor.analyzer.kernel_limits_auditor import KernelLimitsAuditor
+    from nginx_doctor.analyzer.logs_auditor import LogsAuditor
     from nginx_doctor.analyzer.telemetry_auditor import TelemetryAuditor
     from nginx_doctor.analyzer.security_baseline_auditor import SecurityBaselineAuditor
+    from nginx_doctor.analyzer.resources_auditor import ResourcesAuditor
+    from nginx_doctor.analyzer.storage_auditor import StorageAuditor
     from nginx_doctor.analyzer.vulnerability_auditor import VulnerabilityAuditor
     from nginx_doctor.analyzer.network_surface_auditor import NetworkSurfaceAuditor
     from nginx_doctor.analyzer.path_conflict_auditor import PathConflictAuditor
     from nginx_doctor.analyzer.runtime_drift_auditor import RuntimeDriftAuditor
     from nginx_doctor.analyzer.certbot_auditor import CertbotAuditor
+    from nginx_doctor.analyzer.ops_posture_auditor import OpsPostureAuditor
 
     wss_auditor = WSSAuditor(model)
 
@@ -387,34 +799,60 @@ def run_full_diagnosis(
         except Exception:
             return []
 
-    legacy_findings = dr_analyzer.diagnose(
-        additional_findings=(
-            ServerAuditor(model).audit()
-            + _safe_audit("WSS", wss_auditor.audit)
-            + _safe_audit("Docker", DockerAuditor(model).audit)
-            + _safe_audit("Node", NodeAuditor(model).audit)
-            + _safe_audit("Systemd", SystemdAuditor(model).audit)
-            + _safe_audit("Redis", RedisAuditor(model).audit)
-            + _safe_audit("Worker", WorkerAuditor(model).audit)
-            + _safe_audit("MySQL", MySQLAuditor(model).audit)
-            + _safe_audit("Firewall", FirewallAuditor(model).audit)
-            + _safe_audit("Telemetry", TelemetryAuditor(model).audit)
-            + _safe_audit("SecurityBaseline", SecurityBaselineAuditor(model).audit)
-            + _safe_audit("Vulnerability", VulnerabilityAuditor(model).audit)
-            + _safe_audit("NetworkSurface", NetworkSurfaceAuditor(model).audit)
-            + _safe_audit("PathConflict", PathConflictAuditor(model).audit)
-            + _safe_audit("RuntimeDrift", RuntimeDriftAuditor(model).audit)
-            + _safe_audit("Certbot", CertbotAuditor(model).audit)
-        )
-    )
+    # Run all auditors in parallel
+    auditors = [
+        ("Server", lambda: ServerAuditor(model).audit()),
+        ("WSS", wss_auditor.audit),
+        ("Docker", lambda: DockerAuditor(model).audit()),
+        ("Node", lambda: NodeAuditor(model).audit()),
+        ("Systemd", lambda: SystemdAuditor(model).audit()),
+        ("Redis", lambda: RedisAuditor(model).audit()),
+        ("Worker", lambda: WorkerAuditor(model).audit()),
+        ("MySQL", lambda: MySQLAuditor(model).audit()),
+        ("Firewall", lambda: FirewallAuditor(model).audit()),
+        ("Telemetry", lambda: TelemetryAuditor(model).audit()),
+        ("Logs", lambda: LogsAuditor(model).audit()),
+        ("Storage", lambda: StorageAuditor(model).audit()),
+        ("Resources", lambda: ResourcesAuditor(model).audit()),
+        ("KernelLimits", lambda: KernelLimitsAuditor(model).audit()),
+        ("SecurityBaseline", lambda: SecurityBaselineAuditor(model).audit()),
+        ("Vulnerability", lambda: VulnerabilityAuditor(model).audit()),
+        ("NetworkSurface", lambda: NetworkSurfaceAuditor(model).audit()),
+        ("PathConflict", lambda: PathConflictAuditor(model).audit()),
+        ("RuntimeDrift", lambda: RuntimeDriftAuditor(model).audit()),
+        ("Certbot", lambda: CertbotAuditor(model).audit()),
+        ("OpsPosture", lambda: OpsPostureAuditor(model).audit()),
+    ]
+
+    audit_results = []
+    with ThreadPoolExecutor(max_workers=8) as executor:
+        future_to_name = {executor.submit(_safe_audit, name, fn): name for name, fn in auditors}
+        completed = 0
+        for future in as_completed(future_to_name):
+            name = future_to_name[future]
+            try:
+                findings = future.result()
+                audit_results.extend(findings)
+                completed += 1
+                _log(f"  ✓ {name} analyzer complete")
+                # Update progress from 40% to 65% based on completion
+                _progress(40 + int((completed / len(auditors)) * 25))
+            except Exception as e:
+                _log(f"  ✗ {name} analyzer failed: {e}")
+
+    legacy_findings = dr_analyzer.diagnose(additional_findings=audit_results)
+    _progress(65)
 
     _log("Running modular checks...")
+    _progress(67)
     from nginx_doctor.checks import CheckContext, run_checks
     import nginx_doctor.checks.laravel.laravel_auditor
     import nginx_doctor.checks.ports.port_auditor
     import nginx_doctor.checks.security.security_auditor
     import nginx_doctor.checks.phpfpm.phpfpm_auditor
     import nginx_doctor.checks.performance.performance_auditor
+    import nginx_doctor.checks.devops.ci_posture_auditor
+    import nginx_doctor.checks.devops.dependency_posture_auditor
 
     default_enabled = not minimal
 
@@ -426,10 +864,12 @@ def run_full_diagnosis(
         security_enabled=default_enabled or security,
         phpfpm_enabled=default_enabled or phpfpm,
         performance_enabled=default_enabled or performance,
+        devops_enabled=True,
     )
 
     new_findings = run_checks(check_ctx)
     findings = deduplicate_findings(legacy_findings + new_findings)
+    _progress(70)
 
     _log("Applying waivers...")
     from nginx_doctor.engine.waivers import apply_waivers, default_waiver_path, load_waiver_rules

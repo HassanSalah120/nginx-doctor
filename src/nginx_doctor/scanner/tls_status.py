@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import datetime
-import re
+import ipaddress
+import os
 
 from nginx_doctor.connector.ssh import SSHConnector
 from nginx_doctor.model.server import NginxInfo, TLSCertificateStatus, TLSStatusModel
@@ -15,13 +16,54 @@ class TLSStatusScanner:
     def __init__(self, ssh: SSHConnector) -> None:
         self.ssh = ssh
 
+    @staticmethod
+    def _max_targets() -> int:
+        try:
+            return max(1, int(os.getenv("NGINX_DOCTOR_TLS_MAX_TARGETS", "12")))
+        except ValueError:
+            return 12
+
+    @staticmethod
+    def _probe_timeout() -> float:
+        try:
+            return max(2.0, float(os.getenv("NGINX_DOCTOR_TLS_PROBE_TIMEOUT", "4")))
+        except ValueError:
+            return 4.0
+
+    @staticmethod
+    def _shell_quote(value: str) -> str:
+        return "'" + value.replace("'", "'\"'\"'") + "'"
+
+    @staticmethod
+    def _is_ip(value: str) -> bool:
+        try:
+            ipaddress.ip_address(value)
+            return True
+        except ValueError:
+            return False
+
+    def _is_valid_sni(self, value: str) -> bool:
+        sni = (value or "").strip().lower()
+        if not sni or sni in {"_", "default"} or sni.startswith("*"):
+            return False
+        if self._is_ip(sni):
+            return False
+        allowed = set("abcdefghijklmnopqrstuvwxyz0123456789.-")
+        return all(ch in allowed for ch in sni)
+
+    @staticmethod
+    def _target_priority(item: tuple[str, int]) -> tuple[int, str, int]:
+        sni, port = item
+        local_penalty = 1 if sni in {"localhost", "localhost.localdomain"} else 0
+        return (local_penalty, sni, port)
+
     def scan(self, nginx_info: NginxInfo | None) -> TLSStatusModel:
         if not nginx_info:
             return TLSStatusModel()
         sni_targets = self._collect_sni_targets(nginx_info)
         certs: list[TLSCertificateStatus] = []
         for sni, connect_port in sni_targets:
-            certs.append(self._inspect_live_cert(sni, connect_port))
+            certs.append(self._inspect_live_cert(sni, connect_port, nginx_info))
         return TLSStatusModel(certificates=certs)
 
     def _collect_sni_targets(self, nginx_info: NginxInfo) -> list[tuple[str, int]]:
@@ -34,26 +76,56 @@ class TLSStatusScanner:
             port = next((p for p in listens if p), 443) or 443
             for name in (server.server_names or []):
                 sni = (name or "").strip()
-                if not sni or sni in {"_", "default"} or sni.startswith("*"):
+                if not self._is_valid_sni(sni):
                     continue
                 targets.add((sni, port))
-        return sorted(targets)
+        ordered = sorted(targets, key=self._target_priority)
+        return ordered[: self._max_targets()]
 
-    def _inspect_live_cert(self, sni: str, port: int) -> TLSCertificateStatus:
+    def _inspect_live_cert(
+        self,
+        sni: str,
+        port: int,
+        nginx_info: NginxInfo,
+    ) -> TLSCertificateStatus:
         connect = f"127.0.0.1:{port}"
         path = f"live://{sni}@{connect}"
         status = TLSCertificateStatus(path=path)
+        sni_q = self._shell_quote(sni)
+        connect_q = self._shell_quote(connect)
         cmd = (
             "sh -lc \""
-            f"echo | openssl s_client -servername {sni} -connect {connect} 2>/dev/null "
+            f"echo | openssl s_client -servername {sni_q} -connect {connect_q} 2>/dev/null "
             "| openssl x509 -noout -issuer -subject -enddate -ext subjectAltName 2>/dev/null\""
         )
-        res = self.ssh.run(cmd, timeout=8)
+        probe_timeout = self._probe_timeout()
+        res = self.ssh.run(cmd, timeout=probe_timeout, use_sudo=False)
         if not res.success or not (res.stdout or "").strip():
-            status.parse_ok = False
+            # Retry once with a longer timeout to reduce transient handshake misses.
+            res = self.ssh.run(cmd, timeout=max(6.0, probe_timeout * 2), use_sudo=False)
+
+        if res.success and (res.stdout or "").strip():
+            self._parse_cert_output(status, res.stdout or "")
             return status
 
-        lines = [line.strip() for line in (res.stdout or "").splitlines() if line.strip()]
+        # Fallback: parse certificate directly from nginx ssl_certificate file.
+        cert_path = self._find_cert_path(nginx_info, sni, port)
+        if cert_path:
+            cert_q = self._shell_quote(cert_path)
+            file_cmd = (
+                "sh -lc \""
+                f"openssl x509 -in {cert_q} -noout -issuer -subject -enddate -ext subjectAltName 2>/dev/null\""
+            )
+            file_res = self.ssh.run(file_cmd, timeout=max(6.0, probe_timeout * 2))
+            if file_res.success and (file_res.stdout or "").strip():
+                self._parse_cert_output(status, file_res.stdout or "")
+                return status
+
+        status.parse_ok = False
+        return status
+
+    def _parse_cert_output(self, status: TLSCertificateStatus, output: str) -> None:
+        lines = [line.strip() for line in output.splitlines() if line.strip()]
         for line in lines:
             if line.startswith("issuer="):
                 status.issuer = line[len("issuer=") :].strip()
@@ -63,10 +135,23 @@ class TLSStatusScanner:
                 status.expires_at = line[len("notAfter=") :].strip()
             elif "DNS:" in line:
                 sans = [s.strip().replace("DNS:", "") for s in line.split(",") if "DNS:" in s]
-                status.sans.extend([s for s in sans if s])
+                status.sans.extend([s for s in sans if s and s not in status.sans])
         status.days_remaining = self._days_until_expiry(status.expires_at)
         status.parse_ok = True
-        return status
+
+    def _find_cert_path(self, nginx_info: NginxInfo, sni: str, port: int) -> str | None:
+        for server in nginx_info.servers:
+            names = {(name or "").strip().lower() for name in (server.server_names or [])}
+            if sni.lower() not in names:
+                continue
+            listens = [self._extract_listen_port(v) for v in (server.listen or [])]
+            listen_port = next((p for p in listens if p), 443) or 443
+            if listen_port != port:
+                continue
+            cert_path = (server.ssl_certificate or "").strip()
+            if cert_path:
+                return cert_path
+        return None
 
     def _days_until_expiry(self, expires: str | None) -> int | None:
         if not expires:

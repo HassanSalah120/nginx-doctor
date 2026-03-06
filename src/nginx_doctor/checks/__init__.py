@@ -29,6 +29,7 @@ class CheckContext:
     security_enabled: bool = False
     phpfpm_enabled: bool = False
     performance_enabled: bool = False
+    devops_enabled: bool = False
 
 
 class BaseCheck(ABC):
@@ -100,6 +101,8 @@ def run_checks(context: CheckContext) -> list["Finding"]:
         if category == "phpfpm" and not context.phpfpm_enabled:
             continue
         if category == "performance" and not context.performance_enabled:
+            continue
+        if category == "devops" and not context.devops_enabled:
             continue
         
         # Run the check

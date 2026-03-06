@@ -34,6 +34,7 @@ class DirectoryScan:
     has_index_php: bool = False
     has_index_html: bool = False
     has_env: bool = False
+    env_permissions: str | None = None
     # Enhanced Laravel indicators
     has_bootstrap_dir: bool = False
     has_routes_dir: bool = False
@@ -68,6 +69,32 @@ class FilesystemScanner:
     def __init__(self, ssh: SSHConnector) -> None:
         self.ssh = ssh
 
+    @staticmethod
+    def _shell_quote(value: str) -> str:
+        return "'" + value.replace("'", "'\"'\"'") + "'"
+
+    def _list_top_entries(self, path: str) -> list[tuple[str, bool]]:
+        """List immediate entries with type in one remote command."""
+        quoted = self._shell_quote(path.rstrip("/"))
+        cmd = (
+            f"find {quoted} -mindepth 1 -maxdepth 1 "
+            "-printf '%f\\t%y\\n' 2>/dev/null"
+        )
+        result = self.ssh.run(cmd, timeout=8)
+        if not result.success:
+            return []
+
+        entries: list[tuple[str, bool]] = []
+        for line in (result.stdout or "").splitlines():
+            raw = line.strip()
+            if not raw or "\t" not in raw:
+                continue
+            name, kind = raw.split("\t", 1)
+            if not name or name in {".", ".."}:
+                continue
+            entries.append((name, kind == "d"))
+        return entries
+
     def scan_directory(self, path: str) -> DirectoryScan:
         """Scan a directory for project indicators.
 
@@ -79,16 +106,12 @@ class FilesystemScanner:
         """
         scan = DirectoryScan(path=path)
 
-        # List directory contents
-        result = self.ssh.run(f"ls -1a {path}")
-        if not result.success:
+        entries = self._list_top_entries(path)
+        if not entries:
             return scan
 
-        items = [i for i in result.stdout.strip().split("\n") if i and i not in (".", "..")]
-
-        for item in items:
+        for item, is_dir in entries:
             item_path = f"{path}/{item}"
-            is_dir = self.ssh.dir_exists(item_path)
 
             if is_dir:
                 scan.directories.append(item)
@@ -118,6 +141,11 @@ class FilesystemScanner:
                 scan.has_index_html = True
             elif item == ".env":
                 scan.has_env = True
+                perm_result = self.ssh.run(f"stat -c '%a' {item_path} 2>/dev/null")
+                if perm_result.success:
+                    perm = (perm_result.stdout or "").strip().splitlines()
+                    if perm:
+                        scan.env_permissions = perm[0].strip()
             elif item == "dist" and is_dir:
                 scan.has_dist_dir = True
             elif item == "build" and is_dir:
@@ -142,7 +170,10 @@ class FilesystemScanner:
         projects: list[DirectoryScan] = []
 
         # Get immediate subdirectories
-        result = self.ssh.run(f"find {web_root} -maxdepth 1 -type d")
+        result = self.ssh.run(
+            f"find {self._shell_quote(web_root.rstrip('/'))} -maxdepth 1 -type d",
+            timeout=8,
+        )
         if not result.success:
             return projects
 
@@ -193,7 +224,7 @@ class FilesystemScanner:
         if not self.ssh.dir_exists(base_path):
             return []
             
-        result = self.ssh.run(f"ls -1F {base_path}")
+        result = self.ssh.run(f"ls -1F {self._shell_quote(base_path)}", timeout=8)
         if not result.success:
             return []
             

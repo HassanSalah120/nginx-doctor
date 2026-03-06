@@ -103,3 +103,42 @@ def test_wss_conflict_detection_same_path_multiple_backends():
     findings = WSSAuditor(model).audit()
     ids = {f.id for f in findings}
     assert "NGX-WSS-009" in ids
+
+
+def test_wss_cors_specific_origin_not_flagged():
+    loc = _ws_location("/wss19/", "http://backend_ws")
+    loc.headers["Access-Control-Allow-Origin"] = '"https://vote.schmobinquiz.de" always'
+    model = _model_with_locations([loc])
+    findings = WSSAuditor(model).audit()
+    assert "NGX-WSS-007" not in {f.id for f in findings}
+
+
+def test_wss_cors_wildcard_is_flagged():
+    loc = _ws_location("/wss19/", "http://backend_ws")
+    loc.headers["Access-Control-Allow-Origin"] = '"*" always'
+    model = _model_with_locations([loc])
+    findings = WSSAuditor(model).audit()
+    assert "NGX-WSS-007" in {f.id for f in findings}
+
+
+def test_wss_cors_specific_origin_from_include_not_flagged():
+    loc = _ws_location("/wss19/", "http://backend_ws")
+    loc.include_files = ["/etc/nginx/conf.d/cors.inc"]
+    model = _model_with_locations([loc])
+    assert model.nginx is not None
+    model.nginx.virtual_files["/etc/nginx/conf.d/cors.inc"] = (
+        'add_header Access-Control-Allow-Origin "https://vote.schmobinquiz.de" always;\n'
+    )
+    findings = WSSAuditor(model).audit()
+    assert "NGX-WSS-007" not in {f.id for f in findings}
+
+
+def test_wss_cors_wildcard_inherited_with_merge_is_flagged():
+    loc = _ws_location("/wss19/", "http://backend_ws")
+    loc.headers["Vary"] = '"Origin" always'
+    loc.add_header_inherit = "merge"
+    model = _model_with_locations([loc])
+    assert model.nginx is not None
+    model.nginx.servers[0].headers["Access-Control-Allow-Origin"] = '"*" always'
+    findings = WSSAuditor(model).audit()
+    assert "NGX-WSS-007" in {f.id for f in findings}

@@ -1,4 +1,6 @@
 import { useState } from 'react'
+import { PageHeader } from '../components/PageHeader'
+import { buttonClass, inputClass, panelClass, tableShellClass } from '../components/ui/styles'
 
 interface K8sScanResult {
   findings_count: number
@@ -33,6 +35,11 @@ export default function KubernetesPage() {
   const [loading, setLoading] = useState(false)
   const [result, setResult] = useState<K8sScanResult | null>(null)
   const [error, setError] = useState<string | null>(null)
+
+  function reset() {
+    setError(null)
+    setResult(null)
+  }
 
   async function handleScan() {
     try {
@@ -75,18 +82,32 @@ export default function KubernetesPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Kubernetes</h1>
-        <p className="text-sm text-slate-400">Analyze K8s ingress, certificates, and nginx-ingress</p>
-      </div>
+      <PageHeader
+        title="Kubernetes"
+        subtitle="Analyze K8s ingress, certificates, and nginx-ingress"
+        actions={
+          <button
+            type="button"
+            onClick={reset}
+            className={buttonClass({ variant: 'default', size: 'sm' })}
+          >
+            Clear
+          </button>
+        }
+      />
 
       {error && (
         <div className="rounded-lg border border-red-800 bg-red-950/30 p-3 text-red-400">
-          {error}
+          <div className="flex items-start justify-between gap-3">
+            <div>{error}</div>
+            <button type="button" onClick={() => setError(null)} className="text-red-300/80 hover:text-red-200">
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
-      <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4 space-y-4">
+      <div className={panelClass() + ' space-y-4'}>
         <h3 className="font-medium">Scan Configuration</h3>
 
         <div className="grid gap-4 md:grid-cols-3">
@@ -96,7 +117,7 @@ export default function KubernetesPage() {
               type="text"
               value={kubeconfig}
               onChange={e => setKubeconfig(e.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+              className={inputClass() + ' mt-1'}
               placeholder="~/.kube/config"
             />
           </div>
@@ -106,7 +127,7 @@ export default function KubernetesPage() {
               type="text"
               value={context}
               onChange={e => setContext(e.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+              className={inputClass() + ' mt-1'}
               placeholder="default"
             />
           </div>
@@ -116,7 +137,7 @@ export default function KubernetesPage() {
               type="text"
               value={namespace}
               onChange={e => setNamespace(e.target.value)}
-              className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+              className={inputClass() + ' mt-1'}
               placeholder="all-namespaces"
             />
           </div>
@@ -125,28 +146,41 @@ export default function KubernetesPage() {
         <button
           onClick={handleScan}
           disabled={loading}
-          className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+          className={buttonClass({ variant: 'primary', size: 'md' })}
         >
           {loading ? 'Scanning...' : 'Scan Kubernetes'}
         </button>
+
+        {!result && (
+          <div className="rounded-md border border-slate-800 bg-slate-950/30 p-3 text-xs text-slate-500">
+            Tip: leave all fields empty to scan the default context/namespace configured on the backend.
+          </div>
+        )}
       </div>
+
+      {!result && (
+        <div className={panelClass() + ' p-6 text-center'}>
+          <div className="text-sm text-slate-300">No scan results yet</div>
+          <div className="mt-1 text-sm text-slate-500">Run a scan to view ingresses, certificates, and findings.</div>
+        </div>
+      )}
 
       {result && (
         <div className="space-y-4">
           <div className="grid gap-4 md:grid-cols-3">
-            <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+            <div className={panelClass()}>
               <div className="text-sm text-slate-400">Findings</div>
               <div className={`mt-1 text-2xl font-semibold ${result.findings_count > 0 ? 'text-red-400' : 'text-green-400'}`}>
                 {result.findings_count}
               </div>
             </div>
-            <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+            <div className={panelClass()}>
               <div className="text-sm text-slate-400">Ingresses</div>
               <div className="mt-1 text-2xl font-semibold text-slate-100">
                 {result.ingresses.length}
               </div>
             </div>
-            <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+            <div className={panelClass()}>
               <div className="text-sm text-slate-400">Certificates</div>
               <div className="mt-1 text-2xl font-semibold text-slate-100">
                 {result.certificates.length}
@@ -155,7 +189,7 @@ export default function KubernetesPage() {
           </div>
 
           {result.findings.length > 0 && (
-            <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+            <div className={panelClass()}>
               <h3 className="font-medium">Findings</h3>
               <div className="mt-4 space-y-2">
                 {result.findings.map((finding, idx) => (
@@ -174,12 +208,20 @@ export default function KubernetesPage() {
             </div>
           )}
 
+          {result.findings.length === 0 && (
+            <div className={panelClass()}>
+              <h3 className="font-medium">Findings</h3>
+              <div className="mt-2 text-sm text-slate-400">No findings were reported.</div>
+            </div>
+          )}
+
           {result.ingresses.length > 0 && (
-            <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+            <div className={panelClass()}>
               <h3 className="font-medium">Ingresses</h3>
               <div className="mt-4 overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-800/50 text-slate-400">
+                <div className={tableShellClass()}>
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-800/50 text-slate-400">
                     <tr>
                       <th className="px-4 py-2 text-left">Name</th>
                       <th className="px-4 py-2 text-left">Namespace</th>
@@ -187,8 +229,8 @@ export default function KubernetesPage() {
                       <th className="px-4 py-2 text-left">TLS</th>
                       <th className="px-4 py-2 text-left">Issues</th>
                     </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800">
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
                     {result.ingresses.map((ing, idx) => (
                       <tr key={idx} className="hover:bg-slate-800/30">
                         <td className="px-4 py-2">{ing.name}</td>
@@ -208,26 +250,28 @@ export default function KubernetesPage() {
                         </td>
                       </tr>
                     ))}
-                  </tbody>
-                </table>
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           )}
 
           {result.certificates.length > 0 && (
-            <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4">
+            <div className={panelClass()}>
               <h3 className="font-medium">Certificates</h3>
               <div className="mt-4 overflow-x-auto">
-                <table className="w-full text-sm">
-                  <thead className="bg-slate-800/50 text-slate-400">
+                <div className={tableShellClass()}>
+                  <table className="w-full text-sm">
+                    <thead className="bg-slate-800/50 text-slate-400">
                     <tr>
                       <th className="px-4 py-2 text-left">Name</th>
                       <th className="px-4 py-2 text-left">Namespace</th>
                       <th className="px-4 py-2 text-left">Status</th>
                       <th className="px-4 py-2 text-left">Expiry</th>
                     </tr>
-                  </thead>
-                  <tbody className="divide-y divide-slate-800">
+                    </thead>
+                    <tbody className="divide-y divide-slate-800">
                     {result.certificates.map((cert, idx) => (
                       <tr key={idx} className="hover:bg-slate-800/30">
                         <td className="px-4 py-2">{cert.name}</td>
@@ -240,8 +284,9 @@ export default function KubernetesPage() {
                         <td className="px-4 py-2 text-slate-400">{cert.expiry}</td>
                       </tr>
                     ))}
-                  </tbody>
-                </table>
+                    </tbody>
+                  </table>
+                </div>
               </div>
             </div>
           )}

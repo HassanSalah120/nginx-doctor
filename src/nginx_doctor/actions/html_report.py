@@ -96,6 +96,7 @@ class HTMLReportAction:
         risk_buckets = self._classify_risk_buckets(display_findings, role_profile)
         fix_tracks = self._build_fix_tracks(display_findings)
         patch_snippets = self._build_patch_snippets(display_findings)
+        resource_metrics = self._build_resource_metrics(model)
 
         html_content = self.template.render(
             model=model,
@@ -120,6 +121,7 @@ class HTMLReportAction:
             patch_snippets=patch_snippets,
             action_plan=action_plan,
             report_score=report_score,
+            resource_metrics=resource_metrics,
             # New enhancements
             executive_summary=executive_summary,
             compliance_status=compliance_status,
@@ -1235,6 +1237,29 @@ class HTMLReportAction:
                 and cert.days_remaining < 14
                 and renewal_owner == "unknown"
             )
+            # Visual countdown status
+            days = cert.days_remaining
+            if days is None:
+                expiry_status = "unknown"
+                expiry_color = "gray"
+                expiry_urgent = False
+            elif days <= 7:
+                expiry_status = "critical"
+                expiry_color = "red"
+                expiry_urgent = True
+            elif days <= 30:
+                expiry_status = "warning"
+                expiry_color = "orange"
+                expiry_urgent = True
+            elif days <= 60:
+                expiry_status = "caution"
+                expiry_color = "yellow"
+                expiry_urgent = False
+            else:
+                expiry_status = "healthy"
+                expiry_color = "green"
+                expiry_urgent = False
+            
             rows.append(
                 {
                     "path": cert.path,
@@ -1246,28 +1271,59 @@ class HTMLReportAction:
                     "parse_ok": cert.parse_ok,
                     "renewal_owner": renewal_owner,
                     "owner_unknown_alert": owner_unknown_alert,
+                    # Visual countdown fields
+                    "expiry_status": expiry_status,
+                    "expiry_color": expiry_color,
+                    "expiry_urgent": expiry_urgent,
                 }
             )
         # fallback from certbot when tls parsing is unavailable
         if not rows and getattr(model, "certbot", None):
             for path in (model.certbot.active_cert_paths or []):
                 renewal_owner = "certbot" if (model.certbot.installed and model.certbot.timer_enabled) else "unknown"
+                days = model.certbot.min_days_to_expiry
                 owner_unknown_alert = (
-                    model.certbot.min_days_to_expiry is not None
-                    and model.certbot.min_days_to_expiry < 14
+                    days is not None
+                    and days < 14
                     and renewal_owner == "unknown"
                 )
+                # Visual countdown for fallback
+                if days is None:
+                    expiry_status = "unknown"
+                    expiry_color = "gray"
+                    expiry_urgent = False
+                elif days <= 7:
+                    expiry_status = "critical"
+                    expiry_color = "red"
+                    expiry_urgent = True
+                elif days <= 30:
+                    expiry_status = "warning"
+                    expiry_color = "orange"
+                    expiry_urgent = True
+                elif days <= 60:
+                    expiry_status = "caution"
+                    expiry_color = "yellow"
+                    expiry_urgent = False
+                else:
+                    expiry_status = "healthy"
+                    expiry_color = "green"
+                    expiry_urgent = False
+                
                 rows.append(
                     {
                         "path": path,
                         "issuer": "unknown",
                         "subject": "unknown",
                         "expires_at": "unknown",
-                        "days_remaining": model.certbot.min_days_to_expiry,
+                        "days_remaining": days,
                         "sans": [],
                         "parse_ok": False,
                         "renewal_owner": renewal_owner,
                         "owner_unknown_alert": owner_unknown_alert,
+                        # Visual countdown fields
+                        "expiry_status": expiry_status,
+                        "expiry_color": expiry_color,
+                        "expiry_urgent": expiry_urgent,
                     }
                 )
         return rows
@@ -1384,6 +1440,56 @@ class HTMLReportAction:
                 "location ~ /\\.(?!well-known).* { deny all; }\n"
             )
         return {"docker_compose": docker_patch, "nginx_include": nginx_patch}
+
+    @staticmethod
+    def _build_resource_metrics(model: ServerModel) -> dict[str, Any]:
+        """Build visual resource metrics with usage percentages."""
+        telemetry = getattr(model, "telemetry", None)
+        if not telemetry:
+            return {"has_data": False}
+        
+        metrics = {"has_data": True, "cpu": {}, "memory": {}, "disks": []}
+        
+        # CPU metrics
+        cpu_cores = getattr(telemetry, "cpu_cores", None)
+        load_1 = getattr(telemetry, "load_1", None)
+        if cpu_cores and load_1 is not None:
+            load_pct = min(100, round((load_1 / cpu_cores) * 100))
+            metrics["cpu"] = {
+                "cores": cpu_cores,
+                "load_1": round(load_1, 2),
+                "load_5": round(getattr(telemetry, "load_5", 0), 2),
+                "load_15": round(getattr(telemetry, "load_15", 0), 2),
+                "usage_percent": load_pct,
+                "status": "critical" if load_pct > 90 else "warning" if load_pct > 70 else "healthy",
+            }
+        
+        # Memory metrics
+        mem_total = getattr(telemetry, "mem_total_mb", None)
+        mem_available = getattr(telemetry, "mem_available_mb", None)
+        if mem_total and mem_available is not None:
+            used_mb = mem_total - mem_available
+            used_pct = round((used_mb / mem_total) * 100)
+            metrics["memory"] = {
+                "total_gb": round(mem_total / 1024, 2),
+                "available_gb": round(mem_available / 1024, 2),
+                "used_gb": round(used_mb / 1024, 2),
+                "used_percent": used_pct,
+                "status": "critical" if used_pct > 90 else "warning" if used_pct > 80 else "healthy",
+            }
+        
+        # Disk metrics (already collected)
+        disks = getattr(telemetry, "disks", []) or []
+        for disk in disks[:4]:  # Top 4 disks by usage
+            metrics["disks"].append({
+                "mount": disk.mount,
+                "total_gb": disk.total_gb,
+                "used_gb": disk.used_gb,
+                "used_percent": disk.used_percent,
+                "status": "critical" if disk.used_percent > 90 else "warning" if disk.used_percent > 80 else "healthy",
+            })
+        
+        return metrics
 
     @staticmethod
     def _classify_firewall_posture(model: ServerModel, port: int, proto: str) -> tuple[str, str]:

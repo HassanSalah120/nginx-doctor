@@ -13,7 +13,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import FileResponse, HTMLResponse
+from fastapi.responses import FileResponse, HTMLResponse, RedirectResponse
 
 from nginx_doctor.web.routes import connect, preview, apply, jobs, status
 from nginx_doctor.web.routes import servers as servers_route
@@ -57,7 +57,12 @@ def create_app() -> FastAPI:
 
     def _serve_spa_or_template(request: Request, template_name: str, context: dict[str, Any] | None = None) -> Any:
         if SPA_INDEX.exists():
-            return FileResponse(SPA_INDEX)
+            path = request.url.path
+            if not path.startswith("/"):
+                path = "/" + path
+            # SPA build is served under /static/spa/ (Vite base). Redirect deep links to that base.
+            target = "/static/spa" + ("/" if path == "/" else path)
+            return RedirectResponse(url=target, status_code=307)
         payload: dict[str, Any] = {"request": request}
         if context:
             payload.update(context)
@@ -134,7 +139,8 @@ def create_app() -> FastAPI:
             raise HTTPException(status_code=404, detail="Not found")
         if path in ("favicon.ico",):
             raise HTTPException(status_code=404, detail="Not found")
-        return FileResponse(SPA_INDEX)
+        target = "/static/spa/" + path
+        return RedirectResponse(url=target, status_code=307)
 
     @app.on_event("startup")
     async def startup() -> None:

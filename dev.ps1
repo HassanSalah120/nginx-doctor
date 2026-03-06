@@ -1,4 +1,19 @@
+param(
+    [switch]$DebugTelemetry
+)
+
 $ErrorActionPreference = 'Stop'
+
+function Set-EnvDefault {
+    param(
+        [Parameter(Mandatory = $true)][string]$Name,
+        [Parameter(Mandatory = $true)][string]$Value
+    )
+
+    if ([string]::IsNullOrWhiteSpace((Get-Item -Path "Env:$Name" -ErrorAction SilentlyContinue).Value)) {
+        Set-Item -Path "Env:$Name" -Value $Value
+    }
+}
 
 function Stop-Tree {
     param([int]$ProcessId)
@@ -50,6 +65,67 @@ $uiErr = Join-Path $root '.dev-ui.err.log'
 "" | Out-File -FilePath $uiOut -Encoding utf8
 "" | Out-File -FilePath $uiErr -Encoding utf8
 
+# Scan performance defaults (override by pre-setting env vars before running this script)
+Set-EnvDefault -Name 'NGINX_DOCTOR_JOB_TIMEOUT' -Value '0'
+Set-EnvDefault -Name 'NGINX_DOCTOR_SSH_MAX_PARALLEL' -Value '1'
+Set-EnvDefault -Name 'NGINX_DOCTOR_SSH_CHANNEL_RETRIES' -Value '6'
+Set-EnvDefault -Name 'NGINX_DOCTOR_SSH_KEEPALIVE_SEC' -Value '20'
+Set-EnvDefault -Name 'NGINX_DOCTOR_SCAN_SECONDARY_WORKERS' -Value '1'
+Set-EnvDefault -Name 'NGINX_DOCTOR_SCAN_RUNTIME_WORKERS' -Value '1'
+Set-EnvDefault -Name 'NGINX_DOCTOR_SCAN_NGINX_WORKERS' -Value '1'
+Set-EnvDefault -Name 'NGINX_DOCTOR_SCAN_PROJECT_WORKERS' -Value '1'
+Set-EnvDefault -Name 'NGINX_DOCTOR_REPO_SCAN_WORKERS' -Value '1'
+Set-EnvDefault -Name 'NGINX_DOCTOR_TLS_MAX_TARGETS' -Value '8'
+Set-EnvDefault -Name 'NGINX_DOCTOR_TLS_PROBE_TIMEOUT' -Value '3'
+Set-EnvDefault -Name 'NGINX_DOCTOR_CERTBOT_DRY_RUN' -Value '0'
+Set-EnvDefault -Name 'NGINX_DOCTOR_DEPENDENCY_OUTDATED_TIMEOUT' -Value '15'
+Set-EnvDefault -Name 'NGINX_DOCTOR_DEPENDENCY_AUDIT_TIMEOUT' -Value '20'
+Set-EnvDefault -Name 'NGINX_DOCTOR_LOG_JOURNAL_MAX_LINES' -Value '2000'
+Set-EnvDefault -Name 'NGINX_DOCTOR_LOG_NGINX_TAIL_LINES' -Value '400'
+Set-EnvDefault -Name 'NGINX_DOCTOR_LOG_PHP_TAIL_LINES' -Value '250'
+Set-EnvDefault -Name 'NGINX_DOCTOR_LOG_DOCKER_TAIL_LINES' -Value '60'
+Set-EnvDefault -Name 'NGINX_DOCTOR_STORAGE_DMESG_TAIL_LINES' -Value '20'
+Set-EnvDefault -Name 'NGINX_DOCTOR_RESOURCES_TOP_PROCESS_ROWS' -Value '8'
+Set-EnvDefault -Name 'NGINX_DOCTOR_LOG_JOURNAL_WARN_COUNT' -Value '120'
+Set-EnvDefault -Name 'NGINX_DOCTOR_LOG_JOURNAL_CRIT_COUNT' -Value '500'
+Set-EnvDefault -Name 'NGINX_DOCTOR_STORAGE_DISK_WARN_PERCENT' -Value '92'
+Set-EnvDefault -Name 'NGINX_DOCTOR_STORAGE_DISK_CRIT_PERCENT' -Value '97'
+Set-EnvDefault -Name 'NGINX_DOCTOR_RESOURCES_PSI_MEM_WARN' -Value '2'
+Set-EnvDefault -Name 'NGINX_DOCTOR_RESOURCES_PSI_MEM_CRIT' -Value '6'
+Set-EnvDefault -Name 'NGINX_DOCTOR_OOM_CRIT_COUNT' -Value '3'
+
+Write-Host ("Scan perf defaults: timeout={0}, ssh_parallel={1}, repo_workers={2}, tls_targets={3}, tls_timeout={4}s, certbot_dry_run={5}, dep_outdated_timeout={6}s, dep_audit_timeout={7}s" -f `
+    $env:NGINX_DOCTOR_JOB_TIMEOUT, `
+    $env:NGINX_DOCTOR_SSH_MAX_PARALLEL, `
+    $env:NGINX_DOCTOR_REPO_SCAN_WORKERS, `
+    $env:NGINX_DOCTOR_TLS_MAX_TARGETS, `
+    $env:NGINX_DOCTOR_TLS_PROBE_TIMEOUT, `
+    $env:NGINX_DOCTOR_CERTBOT_DRY_RUN, `
+    $env:NGINX_DOCTOR_DEPENDENCY_OUTDATED_TIMEOUT, `
+    $env:NGINX_DOCTOR_DEPENDENCY_AUDIT_TIMEOUT) -ForegroundColor DarkCyan
+Write-Host ("SSH resiliency: channel_retries={0}, keepalive={1}s" -f `
+    $env:NGINX_DOCTOR_SSH_CHANNEL_RETRIES, `
+    $env:NGINX_DOCTOR_SSH_KEEPALIVE_SEC) -ForegroundColor DarkCyan
+Write-Host ("Scan worker limits: secondary={0}, runtime={1}, nginx={2}, project={3}" -f `
+    $env:NGINX_DOCTOR_SCAN_SECONDARY_WORKERS, `
+    $env:NGINX_DOCTOR_SCAN_RUNTIME_WORKERS, `
+    $env:NGINX_DOCTOR_SCAN_NGINX_WORKERS, `
+    $env:NGINX_DOCTOR_SCAN_PROJECT_WORKERS) -ForegroundColor DarkCyan
+
+Write-Host ("Scan guardrails: journal_max={0}, nginx_tail={1}, php_tail={2}, docker_tail={3}, dmesg_tail={4}, top_rows={5}" -f `
+    $env:NGINX_DOCTOR_LOG_JOURNAL_MAX_LINES, `
+    $env:NGINX_DOCTOR_LOG_NGINX_TAIL_LINES, `
+    $env:NGINX_DOCTOR_LOG_PHP_TAIL_LINES, `
+    $env:NGINX_DOCTOR_LOG_DOCKER_TAIL_LINES, `
+    $env:NGINX_DOCTOR_STORAGE_DMESG_TAIL_LINES, `
+    $env:NGINX_DOCTOR_RESOURCES_TOP_PROCESS_ROWS) -ForegroundColor DarkCyan
+
+if ($DebugTelemetry) {
+    $env:VITE_DEBUG_TELEMETRY = '1'
+    $env:NGINX_DOCTOR_DEBUG_TELEMETRY = '1'
+    Write-Host "Telemetry debug enabled (VITE_DEBUG_TELEMETRY=1, NGINX_DOCTOR_DEBUG_TELEMETRY=1)" -ForegroundColor Yellow
+}
+
 Write-Host "Starting FastAPI on http://127.0.0.1:8765 ..."
 $api = Start-Process -FilePath $pythonExe -ArgumentList @('-m','nginx_doctor','web','--port','8765') -WorkingDirectory $root -PassThru -RedirectStandardOutput $apiOut -RedirectStandardError $apiErr
 
@@ -85,6 +161,15 @@ try {
 
         if ($ui.HasExited) {
             Write-Host "Vite dev server exited." -ForegroundColor Red
+
+            if (Test-Path $uiErr) {
+                Write-Host "--- Vite stderr (tail) ---" -ForegroundColor Yellow
+                Get-Content -Path $uiErr -Tail 80 | ForEach-Object { Write-Host $_ }
+            }
+            if (Test-Path $uiOut) {
+                Write-Host "--- Vite stdout (tail) ---" -ForegroundColor Yellow
+                Get-Content -Path $uiOut -Tail 80 | ForEach-Object { Write-Host $_ }
+            }
             break
         }
     }

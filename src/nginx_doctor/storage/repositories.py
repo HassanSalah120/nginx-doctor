@@ -150,12 +150,12 @@ class ServerRepository:
 class ScanJobRepository:
     """CRUD operations for the scan_jobs table."""
 
-    def create(self, server_id: int) -> int:
+    def create(self, server_id: int, repo_scan_paths: str | None = None) -> int:
         """Create a new scan job with status=queued. Returns job ID."""
         db = get_db()
         cursor = db.execute(
-            "INSERT INTO scan_jobs (server_id, status) VALUES (?, 'queued')",
-            (server_id,),
+            "INSERT INTO scan_jobs (server_id, repo_scan_paths, status) VALUES (?, ?, 'queued')",
+            (server_id, repo_scan_paths),
         )
         db.commit()
         return cursor.lastrowid  # type: ignore[return-value]
@@ -199,6 +199,7 @@ class ScanJobRepository:
         raw_report_path: str | None = None,
         error_message: str | None = None,
         progress: int | None = None,
+        model_json: str | None = None,
     ) -> None:
         """Update job status and optional result fields."""
         db = get_db()
@@ -235,6 +236,9 @@ class ScanJobRepository:
         if progress is not None:
             updates.append("progress = ?")
             params.append(progress)
+        if model_json is not None:
+            updates.append("model_json = ?")
+            params.append(model_json)
 
         if not updates:
             return
@@ -302,6 +306,7 @@ class ScanJobRepository:
         return ScanJobRecord(
             id=row["id"],
             server_id=row["server_id"],
+            repo_scan_paths=row["repo_scan_paths"] if "repo_scan_paths" in row.keys() else None,
             status=row["status"],
             started_at=row["started_at"],
             finished_at=row["finished_at"],
@@ -311,6 +316,7 @@ class ScanJobRepository:
             raw_report_path=row["raw_report_path"],
             error_message=row["error_message"],
             progress=row["progress"],
+            model_json=row["model_json"] if "model_json" in row.keys() else None,
             created_at=row["created_at"] or "",
             server_name=row["server_name"] if "server_name" in row.keys() else None,
             server_host=row["server_host"] if "server_host" in row.keys() else None,

@@ -755,11 +755,17 @@
                     <td class="px-6 py-4 text-slate-300">{{ cert.expires_at }}</td>
                     <td class="px-6 py-4">
                       {% if cert.days_remaining is not none %}
-                      <span class="px-2 py-0.5 rounded text-[10px] font-bold {% if cert.days_remaining < 14 %}bg-critical/20 text-critical{% elif cert.days_remaining < 30 %}bg-warning/20 text-warning{% else %}bg-success/20 text-success{% endif %}">
-                        {{ cert.days_remaining }}
+                      <span class="px-3 py-1.5 rounded-lg text-xs font-bold uppercase tracking-wide 
+                        {% if cert.expiry_color == 'red' %}bg-red-500/20 text-red-400 border border-red-500/30{% elif cert.expiry_color == 'orange' %}bg-orange-500/20 text-orange-400 border border-orange-500/30{% elif cert.expiry_color == 'yellow' %}bg-yellow-500/20 text-yellow-400 border border-yellow-500/30{% else %}bg-green-500/20 text-green-400 border border-green-500/30{% endif %}">
+                        {% if cert.days_remaining == 0 %}EXPIRED{% else %}{{ cert.days_remaining }} days{% endif %}
                       </span>
+                      {% if cert.expiry_urgent %}
+                      <div class="text-[10px] text-critical mt-1">
+                        {% if cert.days_remaining <= 7 %}⚠️ Expires within a week!{% else %}⚠️ Expires soon{% endif %}
+                      </div>
+                      {% endif %}
                       {% else %}
-                      <span class="text-slate-500">n/a</span>
+                      <span class="px-2 py-0.5 rounded text-[10px] bg-slate-700 text-slate-400">n/a</span>
                       {% endif %}
                     </td>
                     <td class="px-6 py-4">
@@ -1358,6 +1364,112 @@
               </div>
             </div>
           </div>
+
+          <!-- Resource Metrics Dashboard -->
+          {% if resource_metrics.has_data %}
+          <div class="glass p-6 rounded-[2rem] border-white/5 mb-6">
+            <div class="flex items-center justify-between mb-6">
+              <h4 class="text-sm font-bold uppercase tracking-widest text-slate-400">
+                <i data-lucide="gauge" class="w-4 h-4 inline mr-2"></i>
+                Resource Metrics
+              </h4>
+              <span class="text-xs text-slate-500">Live telemetry from scan</span>
+            </div>
+            
+            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+              <!-- CPU Usage -->
+              {% if resource_metrics.cpu %}
+              <div class="p-4 rounded-xl bg-white/5 border border-white/5">
+                <div class="flex items-center justify-between mb-3">
+                  <div class="flex items-center gap-2">
+                    <div class="w-8 h-8 rounded-lg bg-blue-500/20 flex items-center justify-center">
+                      <i data-lucide="cpu" class="w-4 h-4 text-blue-400"></i>
+                    </div>
+                    <div>
+                      <p class="text-xs font-bold text-slate-300">CPU Usage</p>
+                      <p class="text-[10px] text-slate-500">{{ resource_metrics.cpu.cores }} cores</p>
+                    </div>
+                  </div>
+                  <span class="text-lg font-black {% if resource_metrics.cpu.status == 'critical' %}text-red-400{% elif resource_metrics.cpu.status == 'warning' %}text-yellow-400{% else %}text-green-400{% endif %}">
+                    {{ resource_metrics.cpu.usage_percent }}%
+                  </span>
+                </div>
+                <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden mb-2">
+                  <div class="h-full rounded-full transition-all duration-500 {% if resource_metrics.cpu.status == 'critical' %}bg-red-500{% elif resource_metrics.cpu.status == 'warning' %}bg-yellow-500{% else %}bg-green-500{% endif %}"
+                       style="width: {{ resource_metrics.cpu.usage_percent }}%"></div>
+                </div>
+                <div class="flex justify-between text-[10px] text-slate-500">
+                  <span>Load: {{ resource_metrics.cpu.load_1 }}</span>
+                  <span>{{ resource_metrics.cpu.load_5 }} / {{ resource_metrics.cpu.load_15 }}</span>
+                </div>
+              </div>
+              {% endif %}
+
+              <!-- Memory Usage -->
+              {% if resource_metrics.memory %}
+              <div class="p-4 rounded-xl bg-white/5 border border-white/5">
+                <div class="flex items-center justify-between mb-3">
+                  <div class="flex items-center gap-2">
+                    <div class="w-8 h-8 rounded-lg bg-purple-500/20 flex items-center justify-center">
+                      <i data-lucide="hard-drive" class="w-4 h-4 text-purple-400"></i>
+                    </div>
+                    <div>
+                      <p class="text-xs font-bold text-slate-300">Memory</p>
+                      <p class="text-[10px] text-slate-500">{{ resource_metrics.memory.total_gb }} GB total</p>
+                    </div>
+                  </div>
+                  <span class="text-lg font-black {% if resource_metrics.memory.status == 'critical' %}text-red-400{% elif resource_metrics.memory.status == 'warning' %}text-yellow-400{% else %}text-green-400{% endif %}">
+                    {{ resource_metrics.memory.used_percent }}%
+                  </span>
+                </div>
+                <div class="w-full h-2 bg-slate-800 rounded-full overflow-hidden mb-2">
+                  <div class="h-full rounded-full transition-all duration-500 {% if resource_metrics.memory.status == 'critical' %}bg-red-500{% elif resource_metrics.memory.status == 'warning' %}bg-yellow-500{% else %}bg-green-500{% endif %}"
+                       style="width: {{ resource_metrics.memory.used_percent }}%"></div>
+                </div>
+                <div class="flex justify-between text-[10px] text-slate-500">
+                  <span>{{ resource_metrics.memory.used_gb }} GB used</span>
+                  <span>{{ resource_metrics.memory.available_gb }} GB free</span>
+                </div>
+              </div>
+              {% endif %}
+
+              <!-- Disk Usage Summary -->
+              {% if resource_metrics.disks %}
+              <div class="p-4 rounded-xl bg-white/5 border border-white/5">
+                <div class="flex items-center justify-between mb-3">
+                  <div class="flex items-center gap-2">
+                    <div class="w-8 h-8 rounded-lg bg-orange-500/20 flex items-center justify-center">
+                      <i data-lucide="disc" class="w-4 h-4 text-orange-400"></i>
+                    </div>
+                    <div>
+                      <p class="text-xs font-bold text-slate-300">Disk Usage</p>
+                      <p class="text-[10px] text-slate-500">{{ resource_metrics.disks|length }} mounts</p>
+                    </div>
+                  </div>
+                  {% set max_disk = resource_metrics.disks|sort(attribute='used_percent', reverse=true)|first %}
+                  <span class="text-lg font-black {% if max_disk.status == 'critical' %}text-red-400{% elif max_disk.status == 'warning' %}text-yellow-400{% else %}text-green-400{% endif %}">
+                    {{ max_disk.used_percent }}%
+                  </span>
+                </div>
+                <div class="space-y-1.5 max-h-20 overflow-y-auto">
+                  {% for disk in resource_metrics.disks[:3] %}
+                  <div class="flex items-center justify-between text-[10px]">
+                    <span class="text-slate-400 font-mono truncate" style="max-width: 100px;">{{ disk.mount }}</span>
+                    <div class="flex items-center gap-2">
+                      <div class="w-16 h-1.5 bg-slate-800 rounded-full overflow-hidden">
+                        <div class="h-full rounded-full {% if disk.status == 'critical' %}bg-red-500{% elif disk.status == 'warning' %}bg-yellow-500{% else %}bg-green-500{% endif %}"
+                             style="width: {{ disk.used_percent }}%"></div>
+                      </div>
+                      <span class="text-slate-500 w-8 text-right">{{ disk.used_percent }}%</span>
+                    </div>
+                  </div>
+                  {% endfor %}
+                </div>
+              </div>
+              {% endif %}
+            </div>
+          </div>
+          {% endif %}
 
           <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-6">
             <div class="glass p-6 rounded-[2rem] border-white/5">

@@ -79,22 +79,7 @@ class DockerAuditor:
                             treatment="Keep one authoritative ingress for 443 or isolate secondary ingress bindings.",
                             impact=["TLS ingress ambiguity", "Inconsistent routing/certificate behavior"],
                         ))
-                    else:
-                        findings.append(Finding(
-                            id="DOCKER-3",
-                            severity=Severity.INFO,
-                            confidence=0.85,
-                            condition=f"Ingress container '{container.name}' exposes expected public port {port.host_port}",
-                            cause="This appears to be the reverse proxy ingress endpoint.",
-                            evidence=[Evidence(
-                                source_file="docker",
-                                line_number=1,
-                                excerpt=f"Port Binding: {port.host_ip}:{port.host_port} -> {port.container_port}/{port.proto}",
-                                command="docker ps"
-                            )],
-                            treatment="Keep as-is unless ingress consolidation is required.",
-                            impact=["Expected ingress exposure"],
-                        ))
+                    # Expected ingress exposure on 80/443 is topology metadata, not a finding.
                     continue
 
                 if port.host_port and port.host_port not in covered_host_ports:
@@ -183,6 +168,9 @@ class DockerAuditor:
                             continue
                         firewall_posture, firewall_note = self._classify_firewall_posture(port.host_port, port.proto)
                         base_severity = Severity.INFO if is_intended_ingress else Severity.WARNING
+                        if is_intended_ingress:
+                            # Expected primary ingress exposure; avoid noisy informational finding.
+                            continue
                         severity = base_severity
                         latent_note = ""
                         if firewall_posture == "BLOCKED":

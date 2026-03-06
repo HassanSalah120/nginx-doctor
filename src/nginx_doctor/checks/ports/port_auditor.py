@@ -394,6 +394,8 @@ class PortAuditor(BaseCheck):
         # Find orphan ports
         orphan_ports = []
         for port in listening:
+            if self._is_loopback_address(port.address):
+                continue
             if port.port not in proxied_ports and port.port not in common_ports:
                 # Skip loopback-only common services
                 if port.address == "127.0.0.1" and port.port < 1024:
@@ -435,3 +437,8 @@ class PortAuditor(BaseCheck):
             ))
         
         return findings
+
+    @staticmethod
+    def _is_loopback_address(address: str) -> bool:
+        addr = (address or "").strip().lower().strip("[]")
+        return addr == "localhost" or addr == "::1" or addr.startswith("127.")

@@ -76,3 +76,14 @@ def test_job_repository(repo_setup):
     job = job_repo.get_by_id(job_id)
     assert job.status == "success"
     assert job.score == 100
+
+
+def test_job_repository_persists_repo_scan_paths(repo_setup):
+    server_repo, job_repo = repo_setup
+
+    server_id = server_repo.create("Test", "127.0.0.1", 22, "root")
+    job_id = job_repo.create(server_id, repo_scan_paths="/var/www,/srv/app")
+
+    job = job_repo.get_by_id(job_id)
+    assert job is not None
+    assert job.repo_scan_paths == "/var/www,/srv/app"

@@ -11,6 +11,7 @@ Specialized auditor for WebSocket endpoints that checks:
 
 import re
 from dataclasses import dataclass, field
+from fnmatch import fnmatch
 
 from nginx_doctor.model.evidence import Evidence, Severity
 from nginx_doctor.model.finding import Finding
@@ -447,44 +448,180 @@ class WSSAuditor:
     def _check_cors_security(self) -> list[Finding]:
         """Check for overly permissive CORS on WS endpoints."""
         findings = []
-        
-        if not self.model.nginx or not self.model.nginx.raw:
+        if not self.model.nginx:
             return findings
-        
-        # Check raw config for CORS wildcard near WS locations
-        raw = self.model.nginx.raw
-        
-        # Simple heuristic: look for Access-Control-Allow-Origin *
-        if "Access-Control-Allow-Origin" in raw and "*" in raw:
-            # Check if any of our WS locations might be affected
-            for ws in self.ws_locations:
-                # Search for the pattern near the location
-                findings.append(Finding(
-                    id="NGX-WSS-007",
-                    severity=Severity.WARNING,
-                    confidence=0.60,
-                    condition="Potential CORS wildcard on WebSocket endpoint",
-                    cause="Access-Control-Allow-Origin * detected in config",
-                    evidence=[
-                        Evidence(
-                            source_file=ws.server.source_file,
-                            line_number=ws.location.line_number,
-                            excerpt=f"location {ws.location.path} may have permissive CORS",
-                            command="nginx -T",
-                        )
-                    ],
-                    treatment=(
-                        "Restrict CORS to specific origins:\n"
-                        "    add_header Access-Control-Allow-Origin 'https://yourdomain.com';"
-                    ),
-                    impact=[
-                        "Any website can connect to your WebSocket",
-                        "Cross-site WebSocket hijacking risk",
-                    ],
-                ))
-                break  # Only one finding for this check
-            
+
+        wildcard_ws: list[tuple[WSLocation, str]] = []
+        for ws in self.ws_locations:
+            headers = self._effective_headers_for_ws(ws)
+            origin_value = self._header_value_case_insensitive(headers, "Access-Control-Allow-Origin")
+            if origin_value is None:
+                continue
+            normalized = self._normalize_add_header_value(origin_value)
+            if normalized == "*":
+                wildcard_ws.append((ws, origin_value))
+
+        if not wildcard_ws:
+            return findings
+
+        findings.append(
+            Finding(
+                id="NGX-WSS-007",
+                severity=Severity.WARNING,
+                confidence=0.85,
+                condition="CORS wildcard on WebSocket endpoint",
+                cause="Access-Control-Allow-Origin '*' detected for one or more WebSocket routes.",
+                evidence=[
+                    Evidence(
+                        source_file=ws.server.source_file,
+                        line_number=ws.location.line_number,
+                        excerpt=f"location {ws.location.path} -> Access-Control-Allow-Origin {raw_value}",
+                        command="nginx -T",
+                    )
+                    for ws, raw_value in wildcard_ws
+                ],
+                treatment=(
+                    "Restrict CORS to specific origins:\n"
+                    "    add_header Access-Control-Allow-Origin 'https://yourdomain.com' always;"
+                ),
+                impact=[
+                    "Any website can connect to your WebSocket",
+                    "Cross-site WebSocket hijacking risk",
+                ],
+            )
+        )
+
         return findings
+
+    def _effective_headers_for_ws(self, ws: WSLocation) -> dict[str, str]:
+        """Resolve effective add_header directives for a WS location."""
+        if not self.model.nginx:
+            return {}
+
+        http_headers = dict(self.model.nginx.http_headers or {})
+        http_mode = self._normalize_add_header_inherit(self.model.nginx.http_add_header_inherit)
+
+        server_headers = dict(ws.server.headers)
+        server_inc_headers, server_inc_mode = self._resolve_include_headers(ws.server.include_files)
+        server_headers.update(server_inc_headers)
+        server_mode = self._normalize_add_header_inherit(
+            ws.server.add_header_inherit or server_inc_mode or http_mode
+        )
+        effective_server_headers = self._apply_add_header_inheritance(
+            parent_headers=http_headers,
+            current_headers=server_headers,
+            mode=server_mode,
+        )
+
+        location_headers = dict(ws.location.headers)
+        loc_inc_headers, loc_inc_mode = self._resolve_include_headers(ws.location.include_files)
+        location_headers.update(loc_inc_headers)
+        location_mode = self._normalize_add_header_inherit(
+            ws.location.add_header_inherit or loc_inc_mode or server_mode
+        )
+        return self._apply_add_header_inheritance(
+            parent_headers=effective_server_headers,
+            current_headers=location_headers,
+            mode=location_mode,
+        )
+
+    @staticmethod
+    def _header_value_case_insensitive(headers: dict[str, str], key: str) -> str | None:
+        key_lower = key.lower()
+        for name, value in headers.items():
+            if name.lower() == key_lower:
+                return value
+        return None
+
+    @staticmethod
+    def _normalize_add_header_value(raw_value: str) -> str:
+        """Normalize add_header value by removing flags like `always` and quotes."""
+        value = (raw_value or "").strip().rstrip(";")
+        lower_value = value.lower()
+        if lower_value.endswith(" always"):
+            value = value[: -len(" always")].rstrip()
+        return value.strip().strip('"').strip("'")
+
+    def _resolve_include_headers(
+        self, include_specs: list[str], visited: set[str] | None = None
+    ) -> tuple[dict[str, str], str | None]:
+        if not self.model.nginx or not include_specs:
+            return ({}, None)
+        if visited is None:
+            visited = set()
+
+        headers: dict[str, str] = {}
+        inherit_mode: str | None = None
+        for include_spec in include_specs:
+            for file_path in self._match_include_files(include_spec):
+                if file_path in visited:
+                    continue
+                visited.add(file_path)
+                content = self.model.nginx.virtual_files.get(file_path, "")
+                if not content:
+                    continue
+
+                nested_includes: list[str] = []
+                for raw_line in content.splitlines():
+                    line = raw_line.strip()
+                    if not line or line.startswith("#"):
+                        continue
+
+                    if line.startswith("add_header "):
+                        parts = line.rstrip(";").split(None, 2)
+                        if len(parts) >= 3:
+                            headers[parts[1]] = parts[2]
+                    elif line.startswith("add_header_inherit "):
+                        parts = line.rstrip(";").split(None, 1)
+                        if len(parts) == 2:
+                            inherit_mode = parts[1].strip()
+                    elif line.startswith("include "):
+                        nested_includes.append(line[len("include "):].rstrip(";").strip())
+
+                if nested_includes:
+                    nested_headers, nested_mode = self._resolve_include_headers(nested_includes, visited)
+                    headers.update(nested_headers)
+                    if nested_mode is not None:
+                        inherit_mode = nested_mode
+
+        return (headers, inherit_mode)
+
+    @staticmethod
+    def _normalize_add_header_inherit(value: str | None) -> str:
+        mode = (value or "on").strip().strip(";").strip('"').strip("'").lower()
+        return mode if mode in {"on", "off", "merge"} else "on"
+
+    @staticmethod
+    def _apply_add_header_inheritance(
+        parent_headers: dict[str, str],
+        current_headers: dict[str, str],
+        mode: str,
+    ) -> dict[str, str]:
+        if mode == "off":
+            return dict(current_headers)
+        if mode == "merge":
+            merged = dict(parent_headers)
+            merged.update(current_headers)
+            return merged
+        return dict(current_headers) if current_headers else dict(parent_headers)
+
+    def _match_include_files(self, include_spec: str) -> list[str]:
+        if not self.model.nginx:
+            return []
+
+        spec = (include_spec or "").strip().strip('"').strip("'")
+        if not spec:
+            return []
+
+        all_files = list((self.model.nginx.virtual_files or {}).keys())
+        if "*" in spec or "?" in spec or "[" in spec:
+            return [path for path in all_files if fnmatch(path, spec)]
+
+        if spec in self.model.nginx.virtual_files:
+            return [spec]
+
+        normalized_suffix = "/" + spec.lstrip("./")
+        return [path for path in all_files if path.endswith(normalized_suffix)]
 
     def _check_wildcard_exposure(self) -> list[Finding]:
         """Check for WS endpoints on wildcard/default servers."""

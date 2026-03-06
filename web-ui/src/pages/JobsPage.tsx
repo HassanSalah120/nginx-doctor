@@ -1,17 +1,23 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
+import { Link } from 'react-router-dom'
+import { PageHeader } from '../components/PageHeader'
+import { buttonClass, inputClass, panelClass, selectClass, tableShellClass } from '../components/ui/styles'
 import { api, type Job } from '../services/api'
 
 function StatusBadge({ status }: { status: string }) {
-  const colors: Record<string, string> = {
-    queued: 'bg-slate-600 text-slate-300',
-    running: 'bg-blue-600 text-blue-100',
-    success: 'bg-green-600 text-green-100',
-    failed: 'bg-red-600 text-red-100',
-    cancelled: 'bg-orange-600 text-orange-100',
+  const styles: Record<string, { bg: string; dot: string; text: string }> = {
+    queued: { bg: 'bg-slate-800', dot: 'bg-slate-400', text: 'text-slate-200' },
+    running: { bg: 'bg-blue-500/15', dot: 'bg-blue-400', text: 'text-blue-200' },
+    success: { bg: 'bg-green-500/15', dot: 'bg-green-400', text: 'text-green-200' },
+    failed: { bg: 'bg-red-500/15', dot: 'bg-red-400', text: 'text-red-200' },
+    cancelled: { bg: 'bg-orange-500/15', dot: 'bg-orange-400', text: 'text-orange-200' },
+    cancel_requested: { bg: 'bg-orange-500/15', dot: 'bg-orange-400', text: 'text-orange-200' },
   }
+  const s = styles[status] || { bg: 'bg-slate-800', dot: 'bg-slate-400', text: 'text-slate-200' }
   return (
-    <span className={`inline-flex items-center rounded-full px-2 py-1 text-xs font-medium ${colors[status] || 'bg-slate-600'}`}>
-      {status}
+    <span className={`inline-flex items-center gap-2 rounded-full border border-slate-700 px-2.5 py-1 text-xs font-semibold ${s.bg} ${s.text}`}>
+      <span className={`h-1.5 w-1.5 rounded-full ${s.dot}`} />
+      <span className="capitalize">{status.replaceAll('_', ' ')}</span>
     </span>
   )
 }
@@ -20,6 +26,8 @@ export default function JobsPage() {
   const [jobs, setJobs] = useState<Job[]>([])
   const [loading, setLoading] = useState(true)
   const [error, setError] = useState<string | null>(null)
+  const [query, setQuery] = useState('')
+  const [statusFilter, setStatusFilter] = useState<string>('all')
 
   useEffect(() => {
     loadJobs()
@@ -28,6 +36,7 @@ export default function JobsPage() {
   async function loadJobs() {
     try {
       setLoading(true)
+      setError(null)
       const data = await api.getJobs()
       setJobs(data)
     } catch (err) {
@@ -42,80 +51,307 @@ export default function JobsPage() {
     return new Date(dateStr).toLocaleString()
   }
 
-  if (loading) {
-    return (
-      <div className="flex h-64 items-center justify-center">
-        <div className="text-slate-400">Loading...</div>
-      </div>
-    )
-  }
+  const jobsSorted = useMemo(() => {
+    return [...jobs].sort((a, b) => b.id - a.id)
+  }, [jobs])
 
-  if (error) {
-    return (
-      <div className="rounded-lg border border-red-800 bg-red-950/30 p-4 text-red-400">
-        Error: {error}
-      </div>
-    )
-  }
+  const filteredJobs = useMemo(() => {
+    const q = query.trim().toLowerCase()
+    return jobsSorted.filter(job => {
+      if (statusFilter !== 'all' && job.status !== statusFilter) return false
+      if (!q) return true
+      const serverLabel = job.server_name
+        ? `${job.server_name}${job.server_host ? ` (${job.server_host})` : ''}`
+        : `Server #${job.server_id}`
+      const haystack = `${job.id} ${job.status} ${serverLabel} ${job.summary || ''}`.toLowerCase()
+      return haystack.includes(q)
+    })
+  }, [jobsSorted, query, statusFilter])
+
+  const stats = useMemo(() => {
+    const base = {
+      total: jobs.length,
+      queued: 0,
+      running: 0,
+      success: 0,
+      failed: 0,
+    }
+    for (const j of jobs) {
+      if (j.status === 'queued') base.queued += 1
+      if (j.status === 'running') base.running += 1
+      if (j.status === 'success') base.success += 1
+      if (j.status === 'failed') base.failed += 1
+    }
+    return base
+  }, [jobs])
 
   return (
     <div className="space-y-4">
-      <div className="flex items-center justify-between">
-        <div>
-          <h1 className="text-2xl font-semibold tracking-tight">Jobs</h1>
-          <p className="text-sm text-slate-400">Scan and analysis job history</p>
+      <PageHeader
+        title="Jobs"
+        subtitle="Scan and analysis job history"
+        actions={
+          <button
+            type="button"
+            onClick={loadJobs}
+            className={buttonClass({ variant: 'default', size: 'sm' })}
+          >
+            Refresh
+          </button>
+        }
+      />
+
+      <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+        <div className={panelClass({ padded: false }) + ' p-3'}>
+          <div className="text-xs text-slate-500">Total</div>
+          <div className="mt-1 text-lg font-bold text-slate-100">{stats.total}</div>
         </div>
-        <button
-          onClick={loadJobs}
-          className="rounded-md bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-600"
-        >
-          Refresh
-        </button>
+        <div className={panelClass({ padded: false }) + ' p-3'}>
+          <div className="text-xs text-slate-500">Queued</div>
+          <div className="mt-1 text-lg font-bold text-slate-200">{stats.queued}</div>
+        </div>
+        <div className={panelClass({ padded: false }) + ' p-3'}>
+          <div className="text-xs text-slate-500">Running</div>
+          <div className="mt-1 text-lg font-bold text-blue-300">{stats.running}</div>
+        </div>
+        <div className={panelClass({ padded: false }) + ' p-3'}>
+          <div className="text-xs text-slate-500">Success</div>
+          <div className="mt-1 text-lg font-bold text-green-300">{stats.success}</div>
+        </div>
+        <div className={panelClass({ padded: false }) + ' p-3'}>
+          <div className="text-xs text-slate-500">Failed</div>
+          <div className="mt-1 text-lg font-bold text-red-300">{stats.failed}</div>
+        </div>
       </div>
 
-      {jobs.length === 0 ? (
-        <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-8 text-center">
+      <div className={panelClass({ padded: false }) + ' p-3'}>
+        <div className="flex flex-col gap-2 lg:flex-row lg:items-center">
+          <div className="flex-1">
+            <input
+              value={query}
+              onChange={e => setQuery(e.target.value)}
+              placeholder="Search by job id, server, status, or summary"
+              className={inputClass()}
+            />
+          </div>
+          <div className="flex items-center gap-2">
+            <select
+              value={statusFilter}
+              onChange={e => setStatusFilter(e.target.value)}
+              className={selectClass()}
+            >
+              <option value="all">All statuses</option>
+              <option value="queued">Queued</option>
+              <option value="running">Running</option>
+              <option value="success">Success</option>
+              <option value="failed">Failed</option>
+              <option value="cancel_requested">Cancel requested</option>
+              <option value="cancelled">Cancelled</option>
+            </select>
+          </div>
+        </div>
+        <div className="mt-2 text-xs text-slate-500">
+          Showing {filteredJobs.length}/{jobs.length}
+        </div>
+      </div>
+
+      {loading && (
+        <div className={panelClass() + ' p-6'}>
+          <div className="text-slate-400">Loading jobs...</div>
+        </div>
+      )}
+
+      {error && (
+        <div className="rounded-lg border border-red-800 bg-red-950/30 p-4 text-red-400">
+          Error: {error}
+        </div>
+      )}
+
+      {!loading && !error && jobs.length === 0 ? (
+        <div className={panelClass() + ' p-8 text-center'}>
           <p className="text-slate-400">No jobs yet.</p>
           <p className="mt-1 text-sm text-slate-500">Run a scan from the Servers or Daemon page.</p>
         </div>
-      ) : (
-        <div className="rounded-lg border border-slate-800 bg-slate-900/50 overflow-hidden">
-          <table className="w-full text-sm">
-            <thead className="bg-slate-800/50 text-slate-400">
-              <tr>
-                <th className="px-4 py-3 text-left">ID</th>
-                <th className="px-4 py-3 text-left">Server</th>
-                <th className="px-4 py-3 text-left">Status</th>
-                <th className="px-4 py-3 text-left">Score</th>
-                <th className="px-4 py-3 text-left">Created</th>
-                <th className="px-4 py-3 text-left">Finished</th>
-              </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800">
-              {jobs.map(job => (
-                <tr key={job.id} className="hover:bg-slate-800/30">
-                  <td className="px-4 py-3 font-mono text-xs">#{job.id}</td>
-                  <td className="px-4 py-3">Server #{job.server_id}</td>
-                  <td className="px-4 py-3">
-                    <StatusBadge status={job.status} />
-                  </td>
-                  <td className="px-4 py-3">
-                    {job.score !== null ? (
-                      <span className={job.score >= 80 ? 'text-green-400' : job.score >= 50 ? 'text-yellow-400' : 'text-red-400'}>
-                        {job.score}
-                      </span>
-                    ) : (
-                      '-'
-                    )}
-                  </td>
-                  <td className="px-4 py-3 text-slate-400">{formatDate(job.created_at)}</td>
-                  <td className="px-4 py-3 text-slate-400">{formatDate(job.finished_at)}</td>
-                </tr>
-              ))}
-            </tbody>
-          </table>
+      ) : null}
+
+      {!loading && !error && jobs.length > 0 && filteredJobs.length === 0 ? (
+        <div className={panelClass() + ' p-6'}>
+          <div className="text-slate-300 font-medium">No jobs match your filters.</div>
+          <div className="mt-1 text-sm text-slate-500">Try clearing the search query or selecting “All statuses”.</div>
         </div>
-      )}
+      ) : null}
+
+      {!loading && !error && filteredJobs.length > 0 ? (
+        <>
+          <div className="space-y-3 lg:hidden">
+            {filteredJobs.map(job => {
+              const canViewReport = job.status === 'success' || job.status === 'failed'
+              const serverLabel = job.server_name
+                ? `${job.server_name}${job.server_host ? ` (${job.server_host})` : ''}`
+                : `Server #${job.server_id}`
+              const progressValue = typeof job.progress === 'number' ? job.progress : null
+              return (
+                <div key={job.id} className={panelClass() + ' p-4'}>
+                  <div className="flex items-start justify-between gap-3">
+                    <div>
+                      <div className="font-mono text-xs text-slate-500">Job #{job.id}</div>
+                      <div className="mt-1 font-semibold text-slate-100">{serverLabel}</div>
+                      {job.summary && <div className="mt-1 text-xs text-slate-500">{job.summary}</div>}
+                    </div>
+                    <StatusBadge status={job.status} />
+                  </div>
+
+                  <div className="mt-4 grid grid-cols-2 gap-3 text-sm">
+                    <div>
+                      <div className="text-xs text-slate-500">Score</div>
+                      <div className="mt-0.5 font-semibold">
+                        {job.score !== null ? (
+                          <span className={job.score >= 80 ? 'text-green-400' : job.score >= 50 ? 'text-yellow-400' : 'text-red-400'}>
+                            {job.score}
+                          </span>
+                        ) : (
+                          <span className="text-slate-500">-</span>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-slate-500">Progress</div>
+                      <div className="mt-1">
+                        {progressValue === null ? (
+                          <span className="text-slate-500">-</span>
+                        ) : (
+                          <div className="flex items-center gap-2">
+                            <div className="h-2 w-24 overflow-hidden rounded bg-slate-800">
+                              <div
+                                className="h-2 bg-sky-600"
+                                style={{ width: `${Math.max(0, Math.min(100, progressValue))}%` }}
+                              />
+                            </div>
+                            <span className="text-xs text-slate-400">{progressValue}%</span>
+                          </div>
+                        )}
+                      </div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-slate-500">Created</div>
+                      <div className="mt-0.5 text-xs text-slate-300">{formatDate(job.created_at)}</div>
+                    </div>
+                    <div>
+                      <div className="text-xs text-slate-500">Finished</div>
+                      <div className="mt-0.5 text-xs text-slate-300">{formatDate(job.finished_at)}</div>
+                    </div>
+                  </div>
+
+                  <div className="mt-4 flex items-center justify-end">
+                    {canViewReport ? (
+                      <Link
+                        to={`/reports/${job.id}`}
+                        className={buttonClass({ variant: 'default', size: 'md' })}
+                      >
+                        View Report
+                      </Link>
+                    ) : (
+                      <button
+                        type="button"
+                        disabled
+                        className={buttonClass({ variant: 'default', size: 'md' }) + ' text-slate-400 opacity-60'}
+                        title="Report becomes available when the job finishes"
+                      >
+                        View Report
+                      </button>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+
+          <div className={'hidden lg:block ' + tableShellClass()}>
+            <div className="overflow-x-auto">
+              <table className="w-full text-sm">
+                <thead className="sticky top-0 bg-slate-800/50 text-slate-400">
+                  <tr>
+                    <th className="px-4 py-3 text-left">ID</th>
+                    <th className="px-4 py-3 text-left">Server</th>
+                    <th className="px-4 py-3 text-left">Status</th>
+                    <th className="px-4 py-3 text-left">Score</th>
+                    <th className="px-4 py-3 text-left">Progress</th>
+                    <th className="px-4 py-3 text-left">Created</th>
+                    <th className="px-4 py-3 text-left">Finished</th>
+                    <th className="px-4 py-3 text-right">Actions</th>
+                  </tr>
+                </thead>
+                <tbody className="divide-y divide-slate-800">
+                  {filteredJobs.map((job, idx) => {
+                    const canViewReport = job.status === 'success' || job.status === 'failed'
+                    const serverLabel = job.server_name
+                      ? `${job.server_name}${job.server_host ? ` (${job.server_host})` : ''}`
+                      : `Server #${job.server_id}`
+                    const progressValue = typeof job.progress === 'number' ? job.progress : null
+                    return (
+                      <tr key={job.id} className={`${idx % 2 === 0 ? 'bg-transparent' : 'bg-slate-950/10'} hover:bg-slate-800/30`}>
+                        <td className="px-4 py-3 font-mono text-xs">#{job.id}</td>
+                        <td className="px-4 py-3">
+                          <div className="font-medium text-slate-100">{serverLabel}</div>
+                          {job.summary && <div className="mt-0.5 text-xs text-slate-500">{job.summary}</div>}
+                        </td>
+                        <td className="px-4 py-3">
+                          <StatusBadge status={job.status} />
+                        </td>
+                        <td className="px-4 py-3">
+                          {job.score !== null ? (
+                            <span className={job.score >= 80 ? 'text-green-400' : job.score >= 50 ? 'text-yellow-400' : 'text-red-400'}>
+                              {job.score}
+                            </span>
+                          ) : (
+                            <span className="text-slate-500">-</span>
+                          )}
+                        </td>
+                        <td className="px-4 py-3">
+                          {progressValue === null ? (
+                            <span className="text-slate-500">-</span>
+                          ) : (
+                            <div className="flex items-center gap-2">
+                              <div className="h-2 w-28 overflow-hidden rounded bg-slate-800">
+                                <div
+                                  className="h-2 bg-sky-600"
+                                  style={{ width: `${Math.max(0, Math.min(100, progressValue))}%` }}
+                                />
+                              </div>
+                              <span className="text-xs text-slate-400">{progressValue}%</span>
+                            </div>
+                          )}
+                        </td>
+                        <td className="px-4 py-3 text-slate-400">{formatDate(job.created_at)}</td>
+                        <td className="px-4 py-3 text-slate-400">{formatDate(job.finished_at)}</td>
+                        <td className="px-4 py-3 text-right">
+                          {canViewReport ? (
+                            <Link
+                              to={`/reports/${job.id}`}
+                              className={buttonClass({ variant: 'default', size: 'md' })}
+                            >
+                              View Report
+                            </Link>
+                          ) : (
+                            <button
+                              type="button"
+                              disabled
+                              className={buttonClass({ variant: 'default', size: 'md' }) + ' text-slate-400 opacity-60'}
+                              title="Report becomes available when the job finishes"
+                            >
+                              View Report
+                            </button>
+                          )}
+                        </td>
+                      </tr>
+                    )
+                  })}
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </>
+      ) : null}
     </div>
   )
 }

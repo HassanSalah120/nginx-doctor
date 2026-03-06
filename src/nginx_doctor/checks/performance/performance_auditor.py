@@ -86,23 +86,34 @@ class PerformanceAuditor(BaseCheck):
         for server in info.servers:
             if not server.ssl_enabled:
                 continue
-                
-            has_http2 = any("http2" in l.lower() for l in server.listen)
+
+            has_http2 = any("http2" in listen.lower() for listen in server.listen)
+            if server.http2_enabled is True:
+                has_http2 = True
             
             if not has_http2:
+                listen_excerpt = f"listen {server.listen[0]}" if server.listen else "listen ... (missing)"
                 findings.append(Finding(
                     id="NGX-PERF-2",
                     severity=Severity.INFO,
                     confidence=0.9,
                     condition=f"HTTP/2 disabled on SSL server: {' '.join(server.server_names)}",
-                    cause="Listen directive includes 'ssl' but missing 'http2'.",
+                    cause=(
+                        "No HTTP/2 enablement detected. "
+                        "Checked both `listen ... http2` and `http2 on;` in this server block."
+                    ),
                     evidence=[Evidence(
                         source_file=server.source_file,
                         line_number=server.line_number,
-                        excerpt=f"listen {server.listen[0]}",
+                        excerpt=listen_excerpt,
                         command="",
                     )],
-                    treatment="Enable HTTP/2:\n    listen 443 ssl http2;",
+                    treatment=(
+                        "Enable HTTP/2 with one of:\n"
+                        "    listen 443 ssl http2;\n"
+                        "or\n"
+                        "    http2 on;"
+                    ),
                     fix_commands=[
                         f"sed -i 's/listen 443 ssl;/listen 443 ssl http2;/g' {server.source_file or '/etc/nginx/nginx.conf'}",
                         "nginx -t && systemctl reload nginx"

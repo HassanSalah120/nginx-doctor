@@ -1,4 +1,6 @@
 import { useEffect, useState } from 'react'
+import { PageHeader } from '../components/PageHeader'
+import { buttonClass, inputClass, panelClass } from '../components/ui/styles'
 
 interface NotificationConfig {
   slack?: {
@@ -68,6 +70,12 @@ export default function IntegrationsPage() {
   useEffect(() => {
     loadConfig()
   }, [])
+
+  async function refresh() {
+    setError(null)
+    setMessage(null)
+    await loadConfig()
+  }
 
   async function loadConfig() {
     try {
@@ -202,33 +210,51 @@ export default function IntegrationsPage() {
 
   return (
     <div className="space-y-4">
-      <div>
-        <h1 className="text-2xl font-semibold tracking-tight">Integrations</h1>
-        <p className="text-sm text-slate-400">Configure notifications and alerts</p>
-      </div>
+      <PageHeader
+        title="Integrations"
+        subtitle="Configure notifications and alerts"
+        actions={
+          <button
+            type="button"
+            onClick={refresh}
+            className={buttonClass({ variant: 'default', size: 'sm' })}
+          >
+            Refresh
+          </button>
+        }
+      />
 
       {message && (
         <div className="rounded-lg border border-green-800 bg-green-950/30 p-3 text-green-400">
-          {message}
+          <div className="flex items-start justify-between gap-3">
+            <div>{message}</div>
+            <button type="button" onClick={() => setMessage(null)} className="text-green-300/80 hover:text-green-200">
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
       {error && (
         <div className="rounded-lg border border-red-800 bg-red-950/30 p-3 text-red-400">
-          {error}
+          <div className="flex items-start justify-between gap-3">
+            <div>{error}</div>
+            <button type="button" onClick={() => setError(null)} className="text-red-300/80 hover:text-red-200">
+              Dismiss
+            </button>
+          </div>
         </div>
       )}
 
-      <div className="flex gap-2 border-b border-slate-800">
+      <div className="flex flex-wrap gap-2 border-b border-slate-800 pb-2">
         {(['slack', 'webhook', 'email'] as const).map(tab => (
           <button
             key={tab}
             onClick={() => setActiveTab(tab)}
-            className={`px-4 py-2 text-sm font-medium ${
-              activeTab === tab
-                ? 'border-b-2 border-blue-500 text-blue-400'
-                : 'text-slate-400 hover:text-slate-300'
-            }`}
+            className={
+              buttonClass({ variant: activeTab === tab ? 'default' : 'ghost', size: 'md' }) +
+              (activeTab === tab ? '' : ' text-slate-400')
+            }
           >
             {tab.charAt(0).toUpperCase() + tab.slice(1)}
           </button>
@@ -236,7 +262,7 @@ export default function IntegrationsPage() {
       </div>
 
       {activeTab === 'slack' && (
-        <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4 space-y-4">
+        <div className={panelClass() + ' space-y-4'}>
           <div className="flex items-center justify-between">
             <h3 className="font-medium">Slack Notifications</h3>
             <label className="flex items-center gap-2 text-sm">
@@ -257,7 +283,7 @@ export default function IntegrationsPage() {
                 type="text"
                 value={slackForm.webhook_url}
                 onChange={e => setSlackForm({ ...slackForm, webhook_url: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
                 placeholder="https://hooks.slack.com/services/..."
               />
             </div>
@@ -267,7 +293,7 @@ export default function IntegrationsPage() {
                 type="text"
                 value={slackForm.channel}
                 onChange={e => setSlackForm({ ...slackForm, channel: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
                 placeholder="#alerts"
               />
             </div>
@@ -277,7 +303,7 @@ export default function IntegrationsPage() {
                 type="text"
                 value={slackForm.username}
                 onChange={e => setSlackForm({ ...slackForm, username: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
               />
             </div>
             <div className="flex items-end">
@@ -297,13 +323,13 @@ export default function IntegrationsPage() {
             <button
               onClick={saveSlack}
               disabled={saving}
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+              className={buttonClass({ variant: 'primary', size: 'md' })}
             >
               {saving ? 'Saving...' : 'Save Slack Config'}
             </button>
             <button
               onClick={() => testNotification('slack')}
-              className="rounded-md bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-600"
+              className={buttonClass({ variant: 'default', size: 'md' })}
             >
               Test
             </button>
@@ -312,7 +338,7 @@ export default function IntegrationsPage() {
       )}
 
       {activeTab === 'webhook' && (
-        <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4 space-y-4">
+        <div className={panelClass() + ' space-y-4'}>
           <div className="flex items-center justify-between">
             <h3 className="font-medium">Generic Webhook</h3>
             <label className="flex items-center gap-2 text-sm">
@@ -333,7 +359,7 @@ export default function IntegrationsPage() {
                 type="text"
                 value={webhookForm.url}
                 onChange={e => setWebhookForm({ ...webhookForm, url: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
                 placeholder="https://example.com/webhook"
               />
             </div>
@@ -353,7 +379,7 @@ export default function IntegrationsPage() {
                 type="text"
                 value={webhookForm.events}
                 onChange={e => setWebhookForm({ ...webhookForm, events: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
               />
             </div>
             <div>
@@ -362,7 +388,7 @@ export default function IntegrationsPage() {
                 type="password"
                 value={webhookForm.secret}
                 onChange={e => setWebhookForm({ ...webhookForm, secret: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
               />
             </div>
           </div>
@@ -371,13 +397,13 @@ export default function IntegrationsPage() {
             <button
               onClick={saveWebhook}
               disabled={saving}
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+              className={buttonClass({ variant: 'primary', size: 'md' })}
             >
               {saving ? 'Saving...' : 'Save Webhook Config'}
             </button>
             <button
               onClick={() => testNotification('webhook')}
-              className="rounded-md bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-600"
+              className={buttonClass({ variant: 'default', size: 'md' })}
             >
               Test
             </button>
@@ -386,7 +412,7 @@ export default function IntegrationsPage() {
       )}
 
       {activeTab === 'email' && (
-        <div className="rounded-lg border border-slate-800 bg-slate-900/50 p-4 space-y-4">
+        <div className={panelClass() + ' space-y-4'}>
           <div className="flex items-center justify-between">
             <h3 className="font-medium">Email Notifications</h3>
             <label className="flex items-center gap-2 text-sm">
@@ -407,7 +433,7 @@ export default function IntegrationsPage() {
                 type="text"
                 value={emailForm.smtp_host}
                 onChange={e => setEmailForm({ ...emailForm, smtp_host: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
                 placeholder="smtp.gmail.com"
               />
             </div>
@@ -417,7 +443,7 @@ export default function IntegrationsPage() {
                 type="number"
                 value={emailForm.smtp_port}
                 onChange={e => setEmailForm({ ...emailForm, smtp_port: parseInt(e.target.value) })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
               />
             </div>
             <div>
@@ -426,7 +452,7 @@ export default function IntegrationsPage() {
                 type="text"
                 value={emailForm.smtp_user}
                 onChange={e => setEmailForm({ ...emailForm, smtp_user: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
               />
             </div>
             <div>
@@ -435,7 +461,7 @@ export default function IntegrationsPage() {
                 type="password"
                 value={emailForm.smtp_password}
                 onChange={e => setEmailForm({ ...emailForm, smtp_password: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
               />
             </div>
             <div>
@@ -444,7 +470,7 @@ export default function IntegrationsPage() {
                 type="email"
                 value={emailForm.from_address}
                 onChange={e => setEmailForm({ ...emailForm, from_address: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
               />
             </div>
             <div>
@@ -453,7 +479,7 @@ export default function IntegrationsPage() {
                 type="text"
                 value={emailForm.to_addresses}
                 onChange={e => setEmailForm({ ...emailForm, to_addresses: e.target.value })}
-                className="mt-1 w-full rounded-md border border-slate-700 bg-slate-800 px-3 py-2 text-sm text-white"
+                className={inputClass() + ' mt-1'}
                 placeholder="admin@example.com, ops@example.com"
               />
             </div>
@@ -473,13 +499,13 @@ export default function IntegrationsPage() {
             <button
               onClick={saveEmail}
               disabled={saving}
-              className="rounded-md bg-blue-600 px-4 py-2 text-sm font-medium text-white hover:bg-blue-500 disabled:opacity-50"
+              className={buttonClass({ variant: 'primary', size: 'md' })}
             >
               {saving ? 'Saving...' : 'Save Email Config'}
             </button>
             <button
               onClick={() => testNotification('email')}
-              className="rounded-md bg-slate-700 px-4 py-2 text-sm font-medium text-white hover:bg-slate-600"
+              className={buttonClass({ variant: 'default', size: 'md' })}
             >
               Test
             </button>

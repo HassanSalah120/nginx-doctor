@@ -2,10 +2,13 @@
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import List, Optional, Dict
+
+# ... (rest of the code remains the same)
 
 
 class ProjectType(Enum):
-    """Detected project/framework type."""
+    """Detected project type."""
 
     LARAVEL = "laravel"
     PHP_MVC = "php_mvc"
@@ -85,6 +88,11 @@ class LocationBlock:
     
     # Headers defined with add_header
     headers: dict[str, str] = field(default_factory=dict)
+    add_header_inherit: str | None = None
+    auth_basic: str | None = None
+    include_files: list[str] = field(default_factory=list)
+    allow_rules: list[str] = field(default_factory=list)
+    deny_rules: list[str] = field(default_factory=list)
 
     
     # WebSocket / Reverse Proxy specific
@@ -118,6 +126,12 @@ class ServerBlock:
     
     # Headers defined with add_header
     headers: dict[str, str] = field(default_factory=dict)
+    add_header_inherit: str | None = None
+    auth_basic: str | None = None
+    include_files: list[str] = field(default_factory=list)
+    allow_rules: list[str] = field(default_factory=list)
+    deny_rules: list[str] = field(default_factory=list)
+    http2_enabled: bool | None = None
 
 
     @property
@@ -150,6 +164,7 @@ class NginxInfo:
     
     # Global/HTTP context headers
     http_headers: dict[str, str] = field(default_factory=dict)
+    http_add_header_inherit: str | None = None
     
     has_connection_upgrade_map: bool = False  # True if map $http_upgrade $connection_upgrade detected
     raw: str = ""  # Full nginx -T output for reference
@@ -305,6 +320,7 @@ class ProjectInfo:
     assets_paths: list[str] = field(default_factory=list)
     framework_version: str | None = None  # Laravel 10.x
     env_path: str | None = None  # Path to .env if exists
+    env_permissions: str | None = None  # Numeric mode (e.g. 600) when available
     composer_json: dict | None = None  # Parsed composer.json
     php_socket: str | None = None  # FPM socket used by this project
     docker_container: str | None = None  # Linked container name if applicable
@@ -379,11 +395,43 @@ class DiskUsage:
 class SecurityBaselineModel:
     """Baseline OS/security posture snapshot."""
 
+    package_manager: str | None = None  # apt, dnf, yum, unknown
     ssh_permit_root_login: str | None = None
     ssh_password_authentication: str | None = None
     pending_updates_total: int | None = None
     pending_security_updates: int | None = None
     reboot_required: bool = False
+
+
+@dataclass
+class OpsPostureModel:
+    """Extended operational posture signals for host and containers."""
+
+    backup_tools: list[str] = field(default_factory=list)
+    backup_recent_files: list[str] = field(default_factory=list)
+    backup_last_age_days: float | None = None
+
+    fail2ban_active: bool | None = None
+    unattended_upgrades_enabled: bool | None = None
+    unattended_upgrades_active: bool | None = None
+    ntp_synchronized: bool | None = None
+    auditd_active: bool | None = None
+
+    apparmor_enabled: bool | None = None
+    selinux_mode: str | None = None
+
+    ssh_pubkey_authentication: str | None = None
+    ssh_permit_empty_passwords: str | None = None
+    ssh_max_auth_tries: int | None = None
+    ssh_allow_tcp_forwarding: str | None = None
+
+    docker_socket_mode: str | None = None
+    docker_privileged_containers: list[str] = field(default_factory=list)
+    docker_host_network_containers: list[str] = field(default_factory=list)
+    docker_host_pid_containers: list[str] = field(default_factory=list)
+    docker_root_user_containers: list[str] = field(default_factory=list)
+    docker_no_memory_limit_containers: list[str] = field(default_factory=list)
+    docker_no_readonly_rootfs_containers: list[str] = field(default_factory=list)
 
 
 @dataclass
@@ -491,6 +539,131 @@ class TelemetryModel:
 
 
 @dataclass
+class LogsModel:
+    """Recent log/error posture snapshot."""
+
+    journal_errors_24h: int | None = None
+    journal_oom_events_24h: int | None = None
+    nginx_error_counts: dict[str, int] = field(default_factory=dict)
+    nginx_error_samples: list[str] = field(default_factory=list)
+    php_fpm_error_counts: dict[str, int] = field(default_factory=dict)
+    php_fpm_error_samples: list[str] = field(default_factory=list)
+    docker_crashloop_containers: list[str] = field(default_factory=list)
+    docker_error_samples: list[str] = field(default_factory=list)
+    collection_status: dict[str, str] = field(default_factory=dict)
+    collection_notes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class StorageMountModel:
+    """Storage mount status snapshot."""
+
+    mount: str
+    total_gb: float
+    used_gb: float
+    used_percent: float
+    inode_used_percent: float | None = None
+    read_only: bool = False
+
+
+@dataclass
+class StorageModel:
+    """Storage health posture snapshot."""
+
+    mounts: list[StorageMountModel] = field(default_factory=list)
+    read_only_mounts: list[str] = field(default_factory=list)
+    failed_mount_units: list[str] = field(default_factory=list)
+    io_wait_percent: float | None = None
+    io_error_samples: list[str] = field(default_factory=list)
+    collection_status: dict[str, str] = field(default_factory=dict)
+    collection_notes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class ResourcesModel:
+    """Runtime resource pressure snapshot."""
+
+    cpu_cores: int | None = None
+    load_1: float | None = None
+    load_5: float | None = None
+    load_15: float | None = None
+    mem_total_mb: int | None = None
+    mem_available_mb: int | None = None
+    swap_total_mb: int | None = None
+    swap_free_mb: int | None = None
+    oom_events_24h: int | None = None
+    top_cpu_processes: list[str] = field(default_factory=list)
+    top_mem_processes: list[str] = field(default_factory=list)
+    psi_cpu_some_avg10: float | None = None
+    psi_memory_some_avg10: float | None = None
+    psi_io_some_avg10: float | None = None
+    collection_status: dict[str, str] = field(default_factory=dict)
+    collection_notes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class KernelLimitsModel:
+    """Kernel/sysctl/limits posture snapshot."""
+
+    nofile_soft: int | None = None
+    nofile_hard: int | None = None
+    fs_file_max: int | None = None
+    somaxconn: int | None = None
+    tcp_max_syn_backlog: int | None = None
+    ip_local_port_range_start: int | None = None
+    ip_local_port_range_end: int | None = None
+    tcp_fin_timeout: int | None = None
+    netdev_max_backlog: int | None = None
+    nginx_worker_connections: int | None = None
+    nginx_worker_processes: int | None = None
+    collection_status: dict[str, str] = field(default_factory=dict)
+    collection_notes: dict[str, str] = field(default_factory=dict)
+
+
+@dataclass
+class DependencyManagerStatus:
+    """Dependency manager detection and upgrade signal for a repository."""
+
+    manager: str  # npm, composer, pip, etc.
+    ecosystem: str  # Human-readable ecosystem label
+    detected_files: list[str] = field(default_factory=list)
+    status: str = "detected"  # detected, checked, unavailable, unsupported, error
+    check_command: str | None = None
+    outdated_count: int | None = None
+    sample: list[str] = field(default_factory=list)
+    audit_command: str | None = None
+    vulnerability_count: int | None = None
+    vulnerability_summary: str | None = None
+    vulnerability_sample: list[str] = field(default_factory=list)
+    error: str | None = None
+
+
+@dataclass
+class SupplyChainRepoModel:
+    """Repo-aware supply-chain scan summary for a single repository path."""
+
+    path: str
+    ci_workflows: list[str] = field(default_factory=list)
+    ci_system_files: list[str] = field(default_factory=list)  # .gitlab-ci.yml, Jenkinsfile
+    lockfiles: list[str] = field(default_factory=list)
+    manifests: list[str] = field(default_factory=list)  # package.json, composer.json, etc.
+    docker_files: list[str] = field(default_factory=list)  # Dockerfile*, docker-compose*.yml
+    dependency_managers: list[DependencyManagerStatus] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+
+
+@dataclass
+class SupplyChainModel:
+    """Supply-chain + CI/CD metadata aggregated across one or more repos."""
+
+    enabled: bool = False
+    repo_paths: list[str] = field(default_factory=list)
+    repos: list[SupplyChainRepoModel] = field(default_factory=list)
+    notes: list[str] = field(default_factory=list)
+    errors: list[str] = field(default_factory=list)
+
+
+@dataclass
 class ServerModel:
     """Complete server model - the unified view of the server state.
 
@@ -512,12 +685,18 @@ class ServerModel:
     projects: list[ProjectInfo] = field(default_factory=list)
     runtime: RuntimeModel = field(default_factory=RuntimeModel)
     telemetry: TelemetryModel = field(default_factory=TelemetryModel)
+    logs: LogsModel = field(default_factory=LogsModel)
+    storage: StorageModel = field(default_factory=StorageModel)
+    resources: ResourcesModel = field(default_factory=ResourcesModel)
+    kernel_limits: KernelLimitsModel = field(default_factory=KernelLimitsModel)
     security_baseline: SecurityBaselineModel = field(default_factory=SecurityBaselineModel)
+    ops_posture: OpsPostureModel = field(default_factory=OpsPostureModel)
     vulnerability: VulnerabilityModel = field(default_factory=VulnerabilityModel)
     certbot: CertbotModel = field(default_factory=CertbotModel)
     tls: TLSStatusModel = field(default_factory=TLSStatusModel)
     network_surface: NetworkSurfaceModel = field(default_factory=NetworkSurfaceModel)
     upstream_probes: list[UpstreamProbeResult] = field(default_factory=list)
+    supply_chain: SupplyChainModel = field(default_factory=SupplyChainModel)
     scan_timestamp: str = ""  # ISO format timestamp
     doctor_version: str = ""
     commit_hash: str = ""
